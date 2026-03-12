@@ -434,20 +434,60 @@ export async function completeProviderOAuth(config: ServerConfig, providerId: st
 }
 
 // ---------------------------------------------------------------------------
+// Helpers — off-main-thread JSON parsing via inline Web Worker
+// ---------------------------------------------------------------------------
+
+function parseAgentsInWorker(jsonString: string): Promise<Array<{ id: string; description?: string }>> {
+  return new Promise((resolve, reject) => {
+    const code = `self.onmessage=function(e){try{const parsed=JSON.parse(e.data);const agents=Array.isArray(parsed)?parsed.map(function(agent){if(!agent||typeof agent!=="object")return null;const name=typeof agent.name==="string"?agent.name:"";if(!name)return null;return {id:name,description:typeof agent.description==="string"?agent.description:undefined};}).filter(Boolean):[];self.postMessage({ok:true,data:agents});}catch(err){self.postMessage({ok:false,error:err&&typeof err.message==="string"?err.message:"Worker parse error"});}};`;
+    const blob = new Blob([code], { type: "application/javascript" });
+    const url = URL.createObjectURL(blob);
+    const w = new Worker(url);
+    w.onmessage = (evt: MessageEvent<{ ok: boolean; data?: Array<{ id: string; description?: string }>; error?: string }>) => {
+      w.terminate();
+      URL.revokeObjectURL(url);
+      if (evt.data.ok) resolve(evt.data.data ?? []);
+      else reject(new Error(evt.data.error ?? "Worker parse error"));
+    };
+    w.onerror = (evt) => {
+      w.terminate();
+      URL.revokeObjectURL(url);
+      reject(new Error(evt.message ?? "Worker error"));
+    };
+    w.postMessage(jsonString);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Agents
 // ---------------------------------------------------------------------------
 
 export async function getAgents(config: ServerConfig): Promise<AgentSummary[]> {
-  const client = createClient(config);
-  const { data, error } = await client.app.agents({ throwOnError: false });
-  if (error || !data) return [];
-  return sortByName(
-    (data as Array<{ name: string; description?: string }>).map((agent) => ({
-      id: agent.name,
-      description: agent.description,
-      raw: agent as unknown as UnknownRecord,
-    })),
-  );
+  // The /agent endpoint can return a very large payload (>3 MB) because it
+  // includes full system-prompt text for every agent. Parse and trim it in a
+  // worker so the main thread never receives the giant object graph.
+  try {
+    const authHeader = toBasicAuth(config.username, config.password);
+    const response = await fetch(buildUrl(config, "/agent"), {
+      headers: { Authorization: authHeader, Accept: "application/json" },
+    });
+    if (!response.ok) return [];
+
+    const text = await response.text();
+    if (!text) return [];
+
+    const parsed = await parseAgentsInWorker(text);
+
+    return sortByName(
+      parsed.map((agent) => ({
+        id: agent.id,
+        description: agent.description,
+        raw: { name: agent.id } as UnknownRecord,
+      })),
+    );
+  } catch {
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------

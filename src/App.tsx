@@ -17,8 +17,7 @@ import {
   getToolIds,
   getVcsInfo,
   renameSession,
-  sendAsyncMessage,
-  streamMessage,
+  sendMessage,
   subscribeToEvents,
   toErrorMessage,
 } from "./api/opencode";
@@ -179,6 +178,18 @@ function makeOptimisticMessage(text: string, requestMeta?: MessageRequestMeta): 
     requestMeta,
     optimistic: true,
   };
+}
+
+function isUiRelevantEvent(event: StreamEvent) {
+  return event.type !== "message.part.updated";
+}
+
+function shouldRefreshSessionsFromEvent(event: StreamEvent) {
+  return ["session.created", "session.updated", "session.deleted", "session.idle", "session.error"].includes(event.type);
+}
+
+function shouldRefreshMessagesFromEvent(event: StreamEvent) {
+  return ["message.created", "message.updated", "message.deleted", "session.idle", "session.error"].includes(event.type);
 }
 
 function applyTheme(theme: Theme) {
@@ -361,13 +372,12 @@ export default function App() {
   }, [availableTools, selectedTools]);
 
   const fetchWorkspaceMeta = useCallback(async (activeConfig: ServerConfig) => {
-    const [projectsResult, currentProjectResult, pathInfoResult, vcsInfoResult, agentsResult, toolsResult] =
+    const [projectsResult, currentProjectResult, pathInfoResult, vcsInfoResult, toolsResult] =
       await Promise.allSettled([
         getProjects(activeConfig),
         getCurrentProject(activeConfig),
         getPathInfo(activeConfig),
         getVcsInfo(activeConfig),
-        getAgents(activeConfig),
         getToolIds(activeConfig),
       ]);
 
@@ -380,9 +390,16 @@ export default function App() {
       currentProject: nextCurrentProject ?? nextProjects[0] ?? null,
       pathInfo: pathInfoResult.status === "fulfilled" ? pathInfoResult.value : null,
       vcsInfo: vcsInfoResult.status === "fulfilled" ? vcsInfoResult.value : null,
-      agents: agentsResult.status === "fulfilled" ? agentsResult.value : [],
       tools: toolsResult.status === "fulfilled" ? toolsResult.value : [],
     };
+  }, []);
+
+  const fetchAgentsCatalog = useCallback(async (activeConfig: ServerConfig) => {
+    try {
+      return await getAgents(activeConfig);
+    } catch {
+      return [] as AgentSummary[];
+    }
   }, []);
 
   const loadMessages = useCallback(async (activeConfig: ServerConfig, sessionId: string) => {
@@ -516,82 +533,44 @@ export default function App() {
   const startEventStream = useCallback(
     (activeConfig: ServerConfig) => {
       streamCleanupRef.current?.();
+      setEvents([]);
       setStreamState("connecting");
 
-      // Buffer SSE events and flush on a throttled timer to prevent
-      // main-thread saturation from rapid React re-renders.
-      let eventBuffer: StreamEvent[] = [];
-      let flushTimer: number | null = null;
-      let needsSessionRefresh = false;
-      let needsMessageRefresh = false;
+      const cleanup = subscribeToEvents(activeConfig, {
+        onOpen() {
+          setStreamState("online");
+        },
+        onEvent(event) {
+          if (!isConnectedRef.current) return;
+          if (isInitialLoadingRef.current) return;
+          if (!isUiRelevantEvent(event)) return;
 
-      const flushEvents = () => {
-        flushTimer = null;
-
-        if (eventBuffer.length > 0) {
-          const batch = eventBuffer;
-          eventBuffer = [];
-          setEvents((current) => [...batch, ...current].slice(0, 10));
-        }
-
-        if (needsSessionRefresh) {
-          needsSessionRefresh = false;
-          scheduleSessionsRefresh(activeConfig);
-        }
-
-        if (needsMessageRefresh) {
-          needsMessageRefresh = false;
-          const sid = selectedSessionIdRef.current;
-          if (sid) scheduleMessagesRefresh(activeConfig, sid);
-        }
-      };
-
-      streamCleanupRef.current = subscribeToEvents(activeConfig, {
-        onOpen: () => setStreamState("online"),
-        onEvent: (event) => {
-          eventBuffer.push(event);
+          setEvents((prev) => [...prev.slice(-199), event]);
 
           const eventSessionId = extractEventSessionId(event);
-          const currentSessionId = selectedSessionIdRef.current;
 
-          if (
-            event.type.startsWith("session") ||
-            event.type.startsWith("message") ||
-            event.type.startsWith("tool")
-          ) {
-            needsSessionRefresh = true;
+          if (shouldRefreshSessionsFromEvent(event)) {
+            scheduleSessionsRefresh(activeConfig);
           }
 
           if (
-            currentSessionId &&
-            (!eventSessionId || eventSessionId === currentSessionId) &&
-            (event.type.startsWith("session") ||
-              event.type.startsWith("message") ||
-              event.type.startsWith("tool"))
+            shouldRefreshMessagesFromEvent(event) &&
+            eventSessionId &&
+            eventSessionId === selectedSessionIdRef.current
           ) {
-            needsMessageRefresh = true;
-          }
-
-          // Throttle: flush at most once every 2 seconds
-          if (flushTimer === null) {
-            flushTimer = window.setTimeout(flushEvents, 2000);
+            scheduleMessagesRefresh(activeConfig, eventSessionId);
           }
         },
-        onError: (error) => {
-          if (flushTimer !== null) {
-            window.clearTimeout(flushTimer);
-            flushTimer = null;
-          }
-          isConnectedRef.current = false;
+        onError() {
+          if (!isConnectedRef.current) return;
           setStreamState("error");
-          toast.warning(`SSE stream interrupted: ${toErrorMessage(error)}`);
-          setHealth({ status: "error", error: toErrorMessage(error) });
-          setShowSetup(true);
           scheduleReconnectRef.current?.();
         },
       });
+
+      streamCleanupRef.current = cleanup;
     },
-    [scheduleMessagesRefresh, scheduleSessionsRefresh],
+    [scheduleSessionsRefresh, scheduleMessagesRefresh],
   );
 
   const connectToServer = useCallback(
@@ -626,61 +605,39 @@ export default function App() {
         setConnectError(null);
         setShowSetup(false);
         setShowDocs(false);
+        setStreamState("offline");
         cancelReconnect();
+        setSessions([]);
+        selectedSessionIdRef.current = null;
+        setSelectedSessionId(null);
+        setMessages([]);
+        setProviders([]);
+        setProjects([]);
+        setCurrentProject(null);
+        setPathInfo(null);
+        setVcsInfo(null);
+        setAgents([]);
+        setAvailableTools([]);
+        setEvents([]);
 
-        // Start SSE stream immediately — UI is interactive now
-        startEventStream(nextConfig);
-
-        // Phase 3: load data sequentially so we never exceed 2 simultaneous connections.
-        // Each call has its own .catch() so a single failure cannot block the rest.
-        // isInitialLoadingRef blocks SSE-triggered refreshes from racing with this load.
+        // Phase 3: load only the session list. Other data is fetched on demand
+        // so the UI stays interactive immediately after connect.
         isInitialLoadingRef.current = true;
-        try {
-          // Sessions first — most critical for UX
-          const nextSessions = await getSessions(nextConfig).catch(() => [] as Awaited<ReturnType<typeof getSessions>>);
-          const storedLastSessionId = loadLastSession();
-          const preferredSessionId =
-            nextSessions.find((session) => session.id === storedLastSessionId)?.id ??
-            nextSessions[0]?.id ??
-            null;
-          setSessions(nextSessions);
-          selectedSessionIdRef.current = preferredSessionId;
-          setSelectedSessionId(preferredSessionId);
-          saveLastSession(preferredSessionId);
-
-          // Providers next
-          const nextProviders = await getProviders(nextConfig).catch(() => [] as Awaited<ReturnType<typeof getProviders>>);
-          setProviders(nextProviders);
-
-          // Workspace meta last (internally fires 6 parallel calls via Promise.allSettled,
-          // but only after sessions and providers are already rendered)
-          const workspaceMeta = await fetchWorkspaceMeta(nextConfig).catch(() => ({
-            projects: [] as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["projects"],
-            currentProject: null as unknown as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["currentProject"],
-            pathInfo: null as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["pathInfo"],
-            vcsInfo: null as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["vcsInfo"],
-            agents: [] as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["agents"],
-            tools: [] as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["tools"],
-          }));
-          setProjects(workspaceMeta.projects);
-          setCurrentProject(workspaceMeta.currentProject);
-          setPathInfo(workspaceMeta.pathInfo);
-          setVcsInfo(workspaceMeta.vcsInfo);
-          setAgents(workspaceMeta.agents);
-          setAvailableTools(workspaceMeta.tools);
-
-          // Messages for the selected session — last, least urgent
-          if (preferredSessionId) {
-            const nextMessages = await getSessionMessages(nextConfig, preferredSessionId).catch(() => []);
-            setMessages(nextMessages);
-          } else {
-            setMessages([]);
-          }
-        } finally {
-          isInitialLoadingRef.current = false;
-        }
+        const nextSessions = await getSessions(nextConfig).catch(() => [] as Awaited<ReturnType<typeof getSessions>>);
+        const storedLastSessionId = loadLastSession();
+        const preferredSessionId =
+          nextSessions.find((session) => session.id === storedLastSessionId)?.id ??
+          nextSessions[0]?.id ??
+          null;
+        setSessions(nextSessions);
+        selectedSessionIdRef.current = preferredSessionId;
+        setSelectedSessionId(preferredSessionId);
+        saveLastSession(preferredSessionId);
+        setMessages([]);
+        isInitialLoadingRef.current = false;
       } catch (error) {
         isConnectedRef.current = false;
+        isInitialLoadingRef.current = false;
         setConnectError(toErrorMessage(error));
         setHealth({ status: "error", error: toErrorMessage(error) });
         setStreamState("offline");
@@ -690,7 +647,7 @@ export default function App() {
         setIsConnecting(false);
       }
     },
-    [cancelReconnect, fetchWorkspaceMeta, startEventStream],
+    [cancelReconnect],
   );
 
   // Wire scheduleReconnect after connectToServer is defined (avoids circular useCallback deps)
@@ -732,6 +689,7 @@ export default function App() {
   const handleLogout = useCallback(() => {
     reconnectConfigRef.current = null;
     isConnectedRef.current = false;
+    isInitialLoadingRef.current = false;
     cancelReconnect();
     streamCleanupRef.current?.();
     saveRememberConnection(false);
@@ -779,10 +737,11 @@ export default function App() {
     }
 
     setConnectError(null);
-    const [refreshedSessionId, nextProviders, workspaceMeta] = await Promise.all([
+    const [refreshedSessionId, nextProviders, workspaceMeta, nextAgents] = await Promise.all([
       loadSessions(activeConfig),
       getProviders(activeConfig).catch(() => []),
       fetchWorkspaceMeta(activeConfig),
+      fetchAgentsCatalog(activeConfig),
     ]);
 
     if (refreshedSessionId) {
@@ -794,10 +753,9 @@ export default function App() {
     setCurrentProject(workspaceMeta.currentProject);
     setPathInfo(workspaceMeta.pathInfo);
     setVcsInfo(workspaceMeta.vcsInfo);
-    setAgents(workspaceMeta.agents);
+    setAgents(nextAgents);
     setAvailableTools(workspaceMeta.tools);
-    startEventStream(activeConfig);
-  }, [fetchWorkspaceMeta, loadMessages, loadSessions, startEventStream]);
+  }, [fetchAgentsCatalog, fetchWorkspaceMeta, loadMessages, loadSessions]);
 
   const handleCreateSession = useCallback(async () => {
     const activeConfig = configRef.current;
@@ -908,74 +866,10 @@ export default function App() {
         tools: selectedTools.length > 0 ? selectedTools : undefined,
       };
 
-      if (promptMode === "async") {
-        await sendAsyncMessage(activeConfig, sessionId, payload);
-        setIsSending(false);
-        await loadMessages(activeConfig, sessionId);
-        await loadSessions(activeConfig, sessionId);
-      } else {
-        // Streaming mode: add a placeholder assistant message and fill it token by token
-        const streamId = `streaming-${Date.now()}`;
-        setMessages((current) => [
-          ...current,
-          {
-            info: { id: streamId, role: "assistant", createdAt: new Date().toISOString(), raw: {} },
-            parts: [],
-            streamingText: "",
-            isStreaming: true,
-          },
-        ]);
-
-        let accumulated = "";
-        // Throttle: buffer tokens and flush at most once per animation frame
-        let rafHandle: number | null = null;
-        const flushTokens = () => {
-          rafHandle = null;
-          const snap = accumulated;
-          setMessages((current) =>
-            current.map((m) =>
-              m.info.id === streamId ? { ...m, streamingText: snap } : m,
-            ),
-          );
-        };
-        const abort = streamMessage(activeConfig, sessionId, payload, {
-          onToken: (delta) => {
-            accumulated += delta;
-            if (rafHandle === null) {
-              rafHandle = requestAnimationFrame(flushTokens);
-            }
-          },
-          onDone: () => {
-            // Cancel any pending frame flush and do a final update
-            if (rafHandle !== null) {
-              cancelAnimationFrame(rafHandle);
-              rafHandle = null;
-              flushTokens();
-            }
-            setMessages((current) =>
-              current.map((m) =>
-                m.info.id === streamId ? { ...m, isStreaming: false } : m,
-              ),
-            );
-            setIsSending(false);
-            streamingAbortRef.current = null;
-            void loadMessages(activeConfig, sessionId);
-            void loadSessions(activeConfig, sessionId);
-          },
-          onError: (err) => {
-            if (rafHandle !== null) {
-              cancelAnimationFrame(rafHandle);
-              rafHandle = null;
-            }
-            setMessages((current) => current.filter((m) => m.info.id !== streamId));
-            toast.error(toErrorMessage(err));
-            setIsSending(false);
-            streamingAbortRef.current = null;
-            void loadMessages(activeConfig, sessionId);
-          },
-        });
-        streamingAbortRef.current = abort;
-      }
+      await sendMessage(activeConfig, sessionId, payload);
+      setIsSending(false);
+      await loadMessages(activeConfig, sessionId);
+      await loadSessions(activeConfig, sessionId);
     } catch (error) {
       toast.error(toErrorMessage(error));
       // Mark the last optimistic user message as failed so user can retry

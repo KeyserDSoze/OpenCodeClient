@@ -112,6 +112,15 @@ function CodeBlock({ code, lang }: CodeBlockProps) {
 }
 
 function MarkdownBody({ text, isStreaming }: { text: string; isStreaming?: boolean }) {
+  if (isStreaming) {
+    return (
+      <div className="md-body">
+        <pre className="msg-user-text">{text}</pre>
+        <span className="msg-stream-cursor" aria-hidden="true" />
+      </div>
+    );
+  }
+
   const blocks = useMemo(() => parseMarkdown(text), [text]);
 
   return (
@@ -129,7 +138,6 @@ function MarkdownBody({ text, isStreaming }: { text: string; isStreaming?: boole
           />
         );
       })}
-      {isStreaming && <span className="msg-stream-cursor" aria-hidden="true" />}
     </div>
   );
 }
