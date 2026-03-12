@@ -43,10 +43,8 @@ function createClient(config: ServerConfig): OpencodeClient {
   const authHeader = toBasicAuth(config.username, config.password);
   return createOpencodeClient({
     baseUrl: normalizeBaseUrl(config.serverUrl),
-    fetch: (request: Request) => {
-      const headers = new Headers(request.headers);
-      headers.set("Authorization", authHeader);
-      return fetch(new Request(request, { headers }));
+    headers: {
+      Authorization: authHeader,
     },
   });
 }

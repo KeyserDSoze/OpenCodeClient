@@ -221,61 +221,69 @@ function tokensToHtml(tokens: Token[]): string {
  * Returns syntax-highlighted HTML for a code block.
  * lang should be a lowercase language identifier.
  */
+
+// Module-level cache: avoids re-highlighting the same code block on every render.
+// Key format: "<lang>::<code>". Bounded to 200 entries (LRU-like: delete oldest on overflow).
+const highlightCache = new Map<string, string>();
+const HIGHLIGHT_CACHE_MAX = 200;
+
 export function highlightCode(code: string, lang: string): string {
+  const cacheKey = `${lang}::${code}`;
+  const cached = highlightCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
   const normalLang = lang.toLowerCase().trim();
+  let result: string;
 
   // JSON: just pretty-print with minimal colouring
   if (normalLang === "json") {
-    return escHtml(code)
+    result = escHtml(code)
       .replace(/("(?:[^"\\]|\\.)*")(\s*:)/g, '<span class="hl-type">$1</span>$2')
       .replace(/:\s*("(?:[^"\\]|\\.)*")/g, ': <span class="hl-string">$1</span>')
       .replace(/:\s*(\d[\d.eE+\-]*)/g, ': <span class="hl-number">$1</span>')
       .replace(/:\s*(true|false|null)/g, ': <span class="hl-keyword">$1</span>');
-  }
-
-  // Bash: simple heuristic
-  if (normalLang === "bash" || normalLang === "sh" || normalLang === "shell"
+  } else if (normalLang === "bash" || normalLang === "sh" || normalLang === "shell"
     || normalLang === "zsh" || normalLang === "fish") {
-    return code.split("\n").map((line) => {
+    // Bash: simple heuristic
+    result = code.split("\n").map((line) => {
       if (line.trimStart().startsWith("#")) {
         return `<span class="hl-comment">${escHtml(line)}</span>`;
       }
-      // Command (first word)
       return escHtml(line)
         .replace(/^(\s*)(\S+)/, (_m, ws, cmd) => `${ws}<span class="hl-function">${cmd}</span>`)
         .replace(/(["'])([^"']*)\1/g, '<span class="hl-string">$1$2$1</span>')
         .replace(/\$[\w{][^"'\s]*/g, '<span class="hl-keyword">$&</span>');
     }).join("\n");
-  }
-
-  // CSS
-  if (normalLang === "css" || normalLang === "scss" || normalLang === "less") {
-    return escHtml(code)
+  } else if (normalLang === "css" || normalLang === "scss" || normalLang === "less") {
+    // CSS
+    result = escHtml(code)
       .replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="hl-comment">$1</span>')
       .replace(/([.#]?[\w-]+)\s*\{/g, '<span class="hl-type">$1</span> {')
       .replace(/([\w-]+)\s*:/g, '<span class="hl-function">$1</span>:')
       .replace(/:\s*([^;{}\n]+)/g, (_m, v) => `: <span class="hl-string">${v}</span>`);
-  }
-
-  // HTML / XML
-  if (normalLang === "html" || normalLang === "xml" || normalLang === "svg") {
-    return escHtml(code)
+  } else if (normalLang === "html" || normalLang === "xml" || normalLang === "svg") {
+    // HTML / XML
+    result = escHtml(code)
       .replace(/(&lt;!--[\s\S]*?--&gt;)/g, '<span class="hl-comment">$1</span>')
       .replace(/(&lt;\/?)([\w-]+)/g, '$1<span class="hl-keyword">$2</span>')
       .replace(/([\w-]+)=(&quot;[^&]*&quot;)/g, '<span class="hl-function">$1</span>=<span class="hl-string">$2</span>');
+  } else {
+    // Generic: line-by-line tokeniser
+    const supported = [
+      "js","ts","jsx","tsx","javascript","typescript",
+      "python","py","go","rust","rs","java","c","cpp","cs","csharp",
+    ];
+    result = (!supported.includes(normalLang) && normalLang !== "")
+      ? escHtml(code)
+      : code.split("\n").map((line) => tokensToHtml(tokeniseLine(line, normalLang))).join("\n");
   }
 
-  // Generic: line-by-line tokeniser
-  const supported = [
-    "js","ts","jsx","tsx","javascript","typescript",
-    "python","py","go","rust","rs","java","c","cpp","cs","csharp",
-  ];
-  if (!supported.includes(normalLang) && normalLang !== "") {
-    // Unknown lang: just escape
-    return escHtml(code);
+  // Store in cache (evict oldest entry when at capacity)
+  if (highlightCache.size >= HIGHLIGHT_CACHE_MAX) {
+    highlightCache.delete(highlightCache.keys().next().value as string);
   }
-
-  return code.split("\n").map((line) => tokensToHtml(tokeniseLine(line, normalLang))).join("\n");
+  highlightCache.set(cacheKey, result);
+  return result;
 }
 
 // ─── Inline markdown → HTML ────────────────────────────────────────────────
@@ -329,7 +337,16 @@ export interface RenderedBlock {
  * Splitting into blocks allows the React component to render code blocks
  * as real DOM nodes (for copy buttons, etc.) while prose is dangerouslySetInnerHTML.
  */
+
+// Module-level cache for parsed markdown. Streaming messages update the text on every token,
+// so the cache is most useful for completed messages that are re-rendered (e.g. scrolling back).
+const parseMarkdownCache = new Map<string, RenderedBlock[]>();
+const PARSE_CACHE_MAX = 100;
+
 export function parseMarkdown(text: string): RenderedBlock[] {
+  const cached = parseMarkdownCache.get(text);
+  if (cached !== undefined) return cached;
+
   const blocks: RenderedBlock[] = [];
   // Split on fenced code blocks
   const parts = text.split(/(```[\w]*\n[\s\S]*?```)/g);
@@ -354,6 +371,11 @@ export function parseMarkdown(text: string): RenderedBlock[] {
     }
   }
 
+  // Store in cache (evict oldest entry when at capacity)
+  if (parseMarkdownCache.size >= PARSE_CACHE_MAX) {
+    parseMarkdownCache.delete(parseMarkdownCache.keys().next().value as string);
+  }
+  parseMarkdownCache.set(text, blocks);
   return blocks;
 }
 

@@ -150,12 +150,12 @@ export function Chat({
       if (!role.includes("assistant")) return;
       if (msg.optimistic) return;
       const id = msg.info.id;
+      // Check Set before calling extractMessageText to avoid work on already-spoken messages
+      if (spokenIdsRef.current.has(id)) return;
       const text = extractMessageText(msg);
       if (!text) return;
-      if (!spokenIdsRef.current.has(id)) {
-        spokenIdsRef.current.add(id);
-        tts.enqueue(text);
-      }
+      spokenIdsRef.current.add(id);
+      tts.enqueue(text);
     });
   }, [messages, tts]);
 

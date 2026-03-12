@@ -39,7 +39,6 @@ import {
   loadSelectedModel,
   loadSelectedTools,
   loadServerConfig,
-  loadSessionsCache,
   loadSidebarCollapsed,
   loadTheme,
   renameServerProfile,
@@ -51,7 +50,6 @@ import {
   saveSelectedTools,
   saveServerConfig,
   saveServerProfile,
-  saveSessionsCache,
   saveSidebarCollapsed,
   saveTheme,
 } from "./storage/config";
@@ -191,7 +189,7 @@ export default function App() {
   const [bootstrap] = useState(() => ({
     config: loadServerConfig(),
     knownProfiles: detectKnownServerProfiles(),
-    sessions: loadSessionsCache(),
+    sessions: [],
     lastSessionId: loadLastSession(),
     promptMode: loadPromptMode(),
     selectedAgent: loadSelectedAgent(),
@@ -352,7 +350,8 @@ export default function App() {
 
   useEffect(() => {
     if (selectedTools.length > 0 && availableTools.length > 0) {
-      const filtered = selectedTools.filter((toolId) => availableTools.includes(toolId));
+      const availableSet = new Set(availableTools);
+      const filtered = selectedTools.filter((toolId) => availableSet.has(toolId));
 
       if (filtered.length !== selectedTools.length) {
         setSelectedTools(filtered);
@@ -412,7 +411,6 @@ export default function App() {
       try {
         const nextSessions = await getSessions(activeConfig);
         setSessions(nextSessions);
-        saveSessionsCache(nextSessions);
 
         const desiredSessionId =
           preferredSessionId ??
@@ -491,7 +489,6 @@ export default function App() {
       streamCleanupRef.current = subscribeToEvents(activeConfig, {
         onOpen: () => setStreamState("online"),
         onEvent: (event) => {
-          setStreamState("online");
           setEvents((current) => [event, ...current].slice(0, 10));
 
           const currentSessionId = selectedSessionIdRef.current;
@@ -578,7 +575,6 @@ export default function App() {
             nextSessions[0]?.id ??
             null;
           setSessions(nextSessions);
-          saveSessionsCache(nextSessions);
           selectedSessionIdRef.current = preferredSessionId;
           setSelectedSessionId(preferredSessionId);
           saveLastSession(preferredSessionId);
@@ -745,7 +741,6 @@ export default function App() {
       const nextSession = await createSession(activeConfig, { title: sessionTimestampTitle() });
       const nextSessions = [nextSession, ...sessions.filter((session) => session.id !== nextSession.id)];
       setSessions(nextSessions);
-      saveSessionsCache(nextSessions);
       selectedSessionIdRef.current = nextSession.id;
       setSelectedSessionId(nextSession.id);
       saveLastSession(nextSession.id);
@@ -779,7 +774,6 @@ export default function App() {
         await deleteSession(activeConfig, sessionId);
         const remainingSessions = sessions.filter((session) => session.id !== sessionId);
         setSessions(remainingSessions);
-        saveSessionsCache(remainingSessions);
 
         if (selectedSessionIdRef.current === sessionId) {
           const nextSelected = remainingSessions[0]?.id ?? null;
@@ -814,7 +808,6 @@ export default function App() {
     const nextSession = await createSession(activeConfig, { title: sessionTimestampTitle() });
     const nextSessions = [nextSession, ...sessions.filter((session) => session.id !== nextSession.id)];
     setSessions(nextSessions);
-    saveSessionsCache(nextSessions);
     selectedSessionIdRef.current = nextSession.id;
     setSelectedSessionId(nextSession.id);
     saveLastSession(nextSession.id);
@@ -865,18 +858,31 @@ export default function App() {
         ]);
 
         let accumulated = "";
+        // Throttle: buffer tokens and flush at most once per animation frame
+        let rafHandle: number | null = null;
+        const flushTokens = () => {
+          rafHandle = null;
+          const snap = accumulated;
+          setMessages((current) =>
+            current.map((m) =>
+              m.info.id === streamId ? { ...m, streamingText: snap } : m,
+            ),
+          );
+        };
         const abort = streamMessage(activeConfig, sessionId, payload, {
           onToken: (delta) => {
             accumulated += delta;
-            const snap = accumulated;
-            setMessages((current) =>
-              current.map((m) =>
-                m.info.id === streamId ? { ...m, streamingText: snap } : m,
-              ),
-            );
+            if (rafHandle === null) {
+              rafHandle = requestAnimationFrame(flushTokens);
+            }
           },
           onDone: () => {
-            // Mark streaming message as done, then reload authoritative messages
+            // Cancel any pending frame flush and do a final update
+            if (rafHandle !== null) {
+              cancelAnimationFrame(rafHandle);
+              rafHandle = null;
+              flushTokens();
+            }
             setMessages((current) =>
               current.map((m) =>
                 m.info.id === streamId ? { ...m, isStreaming: false } : m,
@@ -888,6 +894,10 @@ export default function App() {
             void loadSessions(activeConfig, sessionId);
           },
           onError: (err) => {
+            if (rafHandle !== null) {
+              cancelAnimationFrame(rafHandle);
+              rafHandle = null;
+            }
             setMessages((current) => current.filter((m) => m.info.id !== streamId));
             toast.error(toErrorMessage(err));
             setIsSending(false);

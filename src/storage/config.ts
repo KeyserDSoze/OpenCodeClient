@@ -1,8 +1,7 @@
-import type { KnownServerProfile, PromptMode, ServerConfig, SessionSummary } from "../types/opencode";
+import type { KnownServerProfile, PromptMode, ServerConfig } from "../types/opencode";
 
 export const SERVER_CONFIG_KEY = "opencode_server_config";
 export const SERVER_PROFILES_KEY = "opencode_server_profiles";
-export const SESSIONS_CACHE_KEY = "opencode_sessions_cache";
 export const LAST_SESSION_KEY = "opencode_last_session";
 export const PROMPT_MODE_KEY = "opencode_prompt_mode";
 export const SELECTED_AGENT_KEY = "opencode_selected_agent";
@@ -13,7 +12,6 @@ export const THEME_KEY = "opencode_theme";
 export const SIDEBAR_COLLAPSED_KEY = "opencode_sidebar_collapsed";
 
 const STORAGE_KEYS_TO_IGNORE = new Set([
-  SESSIONS_CACHE_KEY,
   LAST_SESSION_KEY,
   PROMPT_MODE_KEY,
   SELECTED_AGENT_KEY,
@@ -242,22 +240,6 @@ export function detectKnownServerProfiles(): KnownServerProfile[] {
 
     return left.label.localeCompare(right.label);
   });
-}
-
-export function loadSessionsCache(): SessionSummary[] {
-  if (!canUseStorage()) {
-    return [];
-  }
-
-  return safeParse<SessionSummary[]>(window.localStorage.getItem(SESSIONS_CACHE_KEY)) ?? [];
-}
-
-export function saveSessionsCache(sessions: SessionSummary[]) {
-  if (!canUseStorage()) {
-    return;
-  }
-
-  window.localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify(sessions));
 }
 
 export function loadLastSession(): string | null {

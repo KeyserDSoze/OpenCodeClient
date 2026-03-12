@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { extractMessageText } from "../api/opencode";
 import { highlightCode, parseMarkdown } from "../lib/markdown";
 import type { SessionMessage } from "../types/opencode";
@@ -93,7 +93,7 @@ interface CodeBlockProps {
 }
 
 function CodeBlock({ code, lang }: CodeBlockProps) {
-  const highlighted = highlightCode(code, lang);
+  const highlighted = useMemo(() => highlightCode(code, lang), [code, lang]);
   const displayLang = lang && lang !== "plaintext" ? lang : null;
 
   return (
@@ -112,7 +112,7 @@ function CodeBlock({ code, lang }: CodeBlockProps) {
 }
 
 function MarkdownBody({ text, isStreaming }: { text: string; isStreaming?: boolean }) {
-  const blocks = parseMarkdown(text);
+  const blocks = useMemo(() => parseMarkdown(text), [text]);
 
   return (
     <div className="md-body">
@@ -136,7 +136,8 @@ function MarkdownBody({ text, isStreaming }: { text: string; isStreaming?: boole
 
 export function Message({ message, isStreaming, onRetry }: MessageProps) {
   const tone = roleTone(message.info.role);
-  const text = extractMessageText(message);
+  // Memoize text extraction — only recomputes when parts or streamingText change
+  const text = useMemo(() => extractMessageText(message), [message.parts, message.streamingText]); // eslint-disable-line react-hooks/exhaustive-deps
   const time = formatTime(message.info.updatedAt ?? message.info.createdAt);
   const metaItems = [
     message.requestMeta?.agent ?? null,
