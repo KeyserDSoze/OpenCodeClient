@@ -81,6 +81,8 @@ export interface SessionMessage {
   parts: MessagePart[];
   requestMeta?: MessageRequestMeta;
   optimistic?: boolean;
+  /** True when the send failed and the message should show a retry button */
+  failed?: boolean;
   /** Set during streaming — accumulated text so far */
   streamingText?: string;
   /** True while this message is still receiving tokens */

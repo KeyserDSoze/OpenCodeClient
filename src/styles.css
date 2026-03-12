@@ -2290,3 +2290,118 @@ button {
   background: var(--bg-4);
   color: var(--text);
 }
+
+/* ════════════════════════════════════════
+   MESSAGE FOOTER — copy button + failed/retry
+════════════════════════════════════════ */
+
+/* Copy button visible on hover of the bubble */
+.msg-bubble .code-copy-btn {
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+.msg-bubble:hover .code-copy-btn,
+.msg-bubble .code-copy-btn:focus {
+  opacity: 1;
+}
+
+/* Failed status */
+.msg-status-failed {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.msg-retry-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-dim);
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 600;
+  transition: background var(--transition), color var(--transition);
+}
+.msg-retry-btn:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* ════════════════════════════════════════
+   RESPONSIVE / MOBILE
+════════════════════════════════════════ */
+
+/* Sidebar overlay backdrop (mobile) */
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 49;
+  animation: fade-in 0.15s ease both;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (max-width: 700px) {
+  /* Hide sidebar by default, slide in as overlay when open */
+  :root { --sidebar-width: 80vw; }
+
+  .workspace {
+    grid-template-columns: 1fr !important;
+  }
+
+  .workspace .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100dvh;
+    width: var(--sidebar-width);
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.4);
+  }
+
+  /* When sidebar is NOT collapsed (= open on mobile) */
+  .workspace:not(.workspace-sidebar-collapsed) .sidebar {
+    transform: translateX(0);
+  }
+
+  .workspace:not(.workspace-sidebar-collapsed) .sidebar-backdrop {
+    display: block;
+  }
+
+  /* When collapsed, sidebar is off-screen (transform already handles it) */
+  .workspace.workspace-sidebar-collapsed .sidebar {
+    transform: translateX(-100%);
+  }
+
+  /* Chat panel takes full width */
+  .chat-panel {
+    grid-column: 1;
+    min-width: 0;
+  }
+
+  /* Topbar tweaks */
+  .topbar-center { display: none; }
+
+  /* Composer textarea smaller min-height */
+  .composer-textarea { min-height: 44px; }
+
+  /* Reduce composer padding */
+  .composer-form { padding: 8px 10px 4px; }
+
+  /* Messages padding */
+  .messages-list { padding: 12px 10px; gap: 12px; }
+
+  /* Reduce msg bubble max-width */
+  .msg-bubble { max-width: 95%; }
+}

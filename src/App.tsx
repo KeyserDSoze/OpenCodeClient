@@ -238,6 +238,16 @@ export default function App() {
     applyTheme(theme);
   }, [theme]);
 
+  // Dynamic document title
+  useEffect(() => {
+    const currentSession = sessions.find((s) => s.id === selectedSessionId);
+    if (currentSession?.title) {
+      document.title = `${currentSession.title} · OpenCode`;
+    } else {
+      document.title = "OpenCode";
+    }
+  }, [selectedSessionId, sessions]);
+
   const handleToggleTheme = useCallback(() => {
     const next: Theme = theme === "dark" ? "light" : "dark";
     setTheme(next);
@@ -758,6 +768,13 @@ export default function App() {
       }
     } catch (error) {
       toast.error(toErrorMessage(error));
+      // Mark the last optimistic user message as failed so user can retry
+      setMessages((current) => {
+        const lastOptimisticIdx = [...current].reverse().findIndex((m) => m.optimistic && !m.failed);
+        if (lastOptimisticIdx === -1) return current;
+        const realIdx = current.length - 1 - lastOptimisticIdx;
+        return current.map((m, i) => (i === realIdx ? { ...m, failed: true } : m));
+      });
       setIsSending(false);
     }
   }, [ensureSession, loadMessages, loadSessions, promptMode, selectedAgent, selectedModel, selectedTools]);
@@ -991,6 +1008,14 @@ export default function App() {
       <ToastContainer toasts={toast.toasts} onDismiss={toast.removeToast} />
 
       <div className={`workspace ${sidebarCollapsed ? "workspace-sidebar-collapsed" : ""}`}>
+        {/* Mobile backdrop — closes sidebar when tapped */}
+        {!sidebarCollapsed && (
+          <div
+            className="sidebar-backdrop"
+            role="presentation"
+            onClick={handleToggleSidebar}
+          />
+        )}
         <SessionsPage
           projects={projects}
           currentProject={currentProject}
@@ -1066,6 +1091,9 @@ export default function App() {
             void loadMessages(activeConfig, currentSessionId);
           }}
           onSend={handleSend}
+          onRemoveMessage={(messageId) => {
+            setMessages((current) => current.filter((m) => m.info.id !== messageId));
+          }}
         />
       </div>
     </div>

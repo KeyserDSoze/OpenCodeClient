@@ -28,6 +28,7 @@ interface ChatPageProps {
   onReload: () => void;
   onAbort?: () => void;
   onSend: (text: string) => Promise<void> | void;
+  onRemoveMessage?: (messageId: string) => void;
 }
 
 export function ChatPage(props: ChatPageProps) {

@@ -33,6 +33,8 @@ interface ChatProps {
   onReload: () => void;
   onAbort?: () => void;
   onSend: (text: string) => Promise<void> | void;
+  onMarkFailed?: (messageId: string) => void;
+  onRemoveMessage?: (messageId: string) => void;
 }
 
 // ── Export helpers ────────────────────────────────────────────────────────────
@@ -91,6 +93,7 @@ export function Chat({
   onReload,
   onAbort,
   onSend,
+  onRemoveMessage,
 }: ChatProps) {
   const [draft, setDraft] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -206,6 +209,12 @@ export function Chat({
 
   const title = useMemo(() => session?.title ?? "New conversation", [session]);
 
+  const handleRetry = async (messageId: string, text: string) => {
+    // Remove the failed message then re-send
+    onRemoveMessage?.(messageId);
+    await onSend(text);
+  };
+
   const submitDraft = async () => {
     if (!draft.trim()) return;
     const nextValue = draft.trim();
@@ -221,9 +230,9 @@ export function Chat({
     await submitDraft();
   };
 
-  // Enter → send; Shift+Enter → newline
+  // Ctrl+Enter / Cmd+Enter → send; Enter alone → newline
   const handleKeyDown = async (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       await submitDraft();
     }
@@ -364,7 +373,12 @@ export function Chat({
         ) : (
           <div className="messages-list">
             {messages.map((message) => (
-              <Message key={message.info.id} message={message} isStreaming={message.isStreaming} />
+              <Message
+                key={message.info.id}
+                message={message}
+                isStreaming={message.isStreaming}
+                onRetry={message.failed ? (text) => void handleRetry(message.info.id, text) : undefined}
+              />
             ))}
             {showTypingIndicator && (
               <div className="msg-row">
@@ -502,7 +516,7 @@ export function Chat({
                   ? sttAutoSend
                     ? "Listening... (will send automatically)"
                     : "Listening... (will append to draft)"
-                  : "Message OpenCode... (Enter to send, Shift+Enter for newline)"
+                  : "Message OpenCode... (Ctrl+Enter to send)"
               }
               rows={1}
             />
@@ -651,7 +665,7 @@ export function Chat({
                 </button>
               )}
 
-              <span className="composer-hint">⇧↵ newline · ↵ send</span>
+              <span className="composer-hint">↵ newline · ⌃↵ send</span>
             </div>
 
             <button

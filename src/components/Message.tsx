@@ -7,6 +7,8 @@ interface MessageProps {
   message: SessionMessage;
   /** When true, renders a pulsing cursor at the end (streaming) */
   isStreaming?: boolean;
+  /** Called when user clicks "Retry" on a failed optimistic message */
+  onRetry?: (text: string) => void;
 }
 
 function roleLabel(role: string) {
@@ -132,7 +134,7 @@ function MarkdownBody({ text, isStreaming }: { text: string; isStreaming?: boole
   );
 }
 
-export function Message({ message, isStreaming }: MessageProps) {
+export function Message({ message, isStreaming, onRetry }: MessageProps) {
   const tone = roleTone(message.info.role);
   const text = extractMessageText(message);
   const time = formatTime(message.info.updatedAt ?? message.info.createdAt);
@@ -177,12 +179,32 @@ export function Message({ message, isStreaming }: MessageProps) {
         )}
 
         <div className="msg-footer">
-          {message.optimistic && (
+          {message.optimistic && !message.failed && (
             <span className="msg-status-sending">
               <span className="msg-status-dot" />
               sending
             </span>
           )}
+          {message.failed && (
+            <span className="msg-status-failed">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="12" />
+                <line x1="12" y1="16" x2="12.01" y2="16" />
+              </svg>
+              Failed
+              {onRetry && (
+                <button
+                  className="msg-retry-btn"
+                  type="button"
+                  onClick={() => onRetry(text)}
+                >
+                  Retry
+                </button>
+              )}
+            </span>
+          )}
+          <CopyButton text={text} />
           {time && <span className="msg-time">{time}</span>}
         </div>
       </div>
