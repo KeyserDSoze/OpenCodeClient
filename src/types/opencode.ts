@@ -4,6 +4,7 @@ export interface ServerConfig {
   serverUrl: string;
   username: string;
   password: string;
+  connectionName?: string;
 }
 
 export interface KnownServerProfile extends ServerConfig {

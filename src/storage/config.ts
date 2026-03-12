@@ -131,7 +131,7 @@ export function loadSavedServerProfiles(): KnownServerProfile[] {
     : [];
 }
 
-export function saveServerProfile(config: ServerConfig) {
+export function saveServerProfile(config: ServerConfig, customLabel?: string) {
   if (!canUseStorage()) {
     return;
   }
@@ -140,11 +140,36 @@ export function saveServerProfile(config: ServerConfig) {
     lastUsedAt: Date.now(),
     detected: false,
     sourceKey: SERVER_PROFILES_KEY,
+    label: customLabel,
   });
   const existing = loadSavedServerProfiles();
-  const merged = [nextProfile, ...existing.filter((profile) => profile.id !== nextProfile.id)].slice(0, 12);
+  const merged = [nextProfile, ...existing.filter((profile) => profile.id !== nextProfile.id)].slice(0, 20);
 
   window.localStorage.setItem(SERVER_PROFILES_KEY, JSON.stringify(merged));
+}
+
+export function renameServerProfile(profileId: string, newLabel: string) {
+  if (!canUseStorage()) {
+    return;
+  }
+
+  const existing = loadSavedServerProfiles();
+  const updated = existing.map((profile) =>
+    profile.id === profileId ? { ...profile, label: newLabel.trim() || profile.label } : profile,
+  );
+
+  window.localStorage.setItem(SERVER_PROFILES_KEY, JSON.stringify(updated));
+}
+
+export function deleteServerProfile(profileId: string) {
+  if (!canUseStorage()) {
+    return;
+  }
+
+  const existing = loadSavedServerProfiles();
+  const filtered = existing.filter((profile) => profile.id !== profileId);
+
+  window.localStorage.setItem(SERVER_PROFILES_KEY, JSON.stringify(filtered));
 }
 
 export function detectKnownServerProfiles(): KnownServerProfile[] {

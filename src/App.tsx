@@ -30,6 +30,7 @@ import { ToastContainer } from "./components/ToastContainer";
 import { useToast } from "./hooks/useToast";
 import {
   DEFAULT_SERVER_CONFIG,
+  deleteServerProfile,
   detectKnownServerProfiles,
   loadLastSession,
   loadPromptMode,
@@ -41,6 +42,7 @@ import {
   loadSessionsCache,
   loadSidebarCollapsed,
   loadTheme,
+  renameServerProfile,
   saveLastSession,
   savePromptMode,
   saveRememberConnection,
@@ -87,6 +89,8 @@ function toModelLabel(providerName: string, model: string, isDefault?: boolean) 
   return `${providerName} / ${shortModel}${isDefault ? " (default)" : ""}`;
 }
 
+const RECONNECT_DELAY_MS = 30_000;
+
 function buildComposerModelOptions(providers: ProviderSummary[]): ComposerSelectOption[] {
   const options = new Map<string, ComposerSelectOption>();
 
@@ -111,20 +115,31 @@ function buildComposerModelOptions(providers: ProviderSummary[]): ComposerSelect
     });
   });
 
-  return Array.from(options.values()).sort((left, right) => left.label.localeCompare(right.label));
+  return Array.from(options.values()).sort((left, right) =>
+    left.label < right.label ? -1 : left.label > right.label ? 1 : 0,
+  );
 }
 
 function buildToolOptions(toolIds: string[]): ComposerSelectOption[] {
-  return toolIds.map((toolId) => ({ value: toolId, label: toolId })).sort((left, right) => left.label.localeCompare(right.label));
+  return toolIds
+    .map((toolId) => ({ value: toolId, label: toolId }))
+    .sort((left, right) => (left.label < right.label ? -1 : left.label > right.label ? 1 : 0));
 }
 
 function attachLocalRequestMeta(
   fetchedMessages: SessionMessage[],
   previousMessages: SessionMessage[],
 ) {
-  const previousUserMessages = previousMessages.filter(
-    (message) => message.info.role.toLowerCase().includes("user") && message.requestMeta,
-  );
+  // Build a Map keyed by message text for O(1) lookups instead of O(n²) nested find
+  const previousMetaByText = new Map<string, SessionMessage["requestMeta"]>();
+  for (const message of previousMessages) {
+    if (message.info.role.toLowerCase().includes("user") && message.requestMeta) {
+      const text = extractMessageText(message);
+      if (!previousMetaByText.has(text)) {
+        previousMetaByText.set(text, message.requestMeta);
+      }
+    }
+  }
 
   return fetchedMessages.map((message) => {
     if (message.requestMeta || !message.info.role.toLowerCase().includes("user")) {
@@ -132,17 +147,15 @@ function attachLocalRequestMeta(
     }
 
     const text = extractMessageText(message);
-    const match = previousUserMessages.find(
-      (candidate) => extractMessageText(candidate) === text && candidate.requestMeta,
-    );
+    const meta = previousMetaByText.get(text);
 
-    if (!match?.requestMeta) {
+    if (!meta) {
       return message;
     }
 
     return {
       ...message,
-      requestMeta: match.requestMeta,
+      requestMeta: meta,
     };
   });
 }
@@ -226,12 +239,20 @@ export default function App() {
 
   const toast = useToast();
 
+  const [reconnectCountdown, setReconnectCountdown] = useState<number | null>(null);
+
   const selectedSessionIdRef = useRef<string | null>(selectedSessionId);
   const configRef = useRef<ServerConfig | null>(bootstrap.config);
+  const isConnectedRef = useRef<boolean>(false);
+  // True while connectToServer is loading data after health — SSE-triggered refreshes must wait
+  const isInitialLoadingRef = useRef<boolean>(false);
   const streamCleanupRef = useRef<(() => void) | null>(null);
   const sessionsRefreshTimerRef = useRef<number | null>(null);
   const messagesRefreshTimerRef = useRef<number | null>(null);
   const streamingAbortRef = useRef<(() => void) | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectCountdownTimerRef = useRef<number | null>(null);
+  const reconnectConfigRef = useRef<ServerConfig | null>(bootstrap.config ?? null);
 
   // Apply theme on mount and changes
   useEffect(() => {
@@ -267,6 +288,10 @@ export default function App() {
   }, [selectedSessionId]);
 
   useEffect(() => {
+    isConnectedRef.current = health.status === "connected";
+  }, [health]);
+
+  useEffect(() => {
     configRef.current = config;
   }, [config]);
 
@@ -286,6 +311,14 @@ export default function App() {
 
       if (messagesRefreshTimerRef.current) {
         window.clearTimeout(messagesRefreshTimerRef.current);
+      }
+
+      if (reconnectTimerRef.current) {
+        window.clearTimeout(reconnectTimerRef.current);
+      }
+
+      if (reconnectCountdownTimerRef.current) {
+        window.clearInterval(reconnectCountdownTimerRef.current);
       }
     };
   }, []);
@@ -400,12 +433,14 @@ export default function App() {
 
   const scheduleSessionsRefresh = useCallback(
     (activeConfig: ServerConfig) => {
+      if (!isConnectedRef.current) return;
+      if (isInitialLoadingRef.current) return;
       if (sessionsRefreshTimerRef.current) {
         window.clearTimeout(sessionsRefreshTimerRef.current);
       }
 
       sessionsRefreshTimerRef.current = window.setTimeout(() => {
-        void loadSessions(activeConfig);
+        if (isConnectedRef.current && !isInitialLoadingRef.current) void loadSessions(activeConfig);
       }, 280);
     },
     [loadSessions],
@@ -413,16 +448,33 @@ export default function App() {
 
   const scheduleMessagesRefresh = useCallback(
     (activeConfig: ServerConfig, sessionId: string) => {
+      if (!isConnectedRef.current) return;
+      if (isInitialLoadingRef.current) return;
       if (messagesRefreshTimerRef.current) {
         window.clearTimeout(messagesRefreshTimerRef.current);
       }
 
       messagesRefreshTimerRef.current = window.setTimeout(() => {
-        void loadMessages(activeConfig, sessionId);
+        if (isConnectedRef.current && !isInitialLoadingRef.current) void loadMessages(activeConfig, sessionId);
       }, 220);
     },
     [loadMessages],
   );
+
+  const cancelReconnect = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    if (reconnectCountdownTimerRef.current) {
+      window.clearInterval(reconnectCountdownTimerRef.current);
+      reconnectCountdownTimerRef.current = null;
+    }
+    setReconnectCountdown(null);
+  }, []);
+
+  // scheduleReconnect is defined after connectToServer via a ref to avoid circular deps
+  const scheduleReconnectRef = useRef<(() => void) | null>(null);
 
   const startEventStream = useCallback(
     (activeConfig: ServerConfig) => {
@@ -439,7 +491,6 @@ export default function App() {
           const eventSessionId = extractEventSessionId(event);
 
           if (
-            event.type === "server.connected" ||
             event.type.startsWith("session") ||
             event.type.startsWith("message") ||
             event.type.startsWith("tool")
@@ -458,8 +509,12 @@ export default function App() {
           }
         },
         onError: (error) => {
+          isConnectedRef.current = false;
           setStreamState("error");
           toast.warning(`SSE stream interrupted: ${toErrorMessage(error)}`);
+          setHealth({ status: "error", error: toErrorMessage(error) });
+          setShowSetup(true);
+          scheduleReconnectRef.current?.();
         },
       });
     },
@@ -467,31 +522,23 @@ export default function App() {
   );
 
   const connectToServer = useCallback(
-    async (nextConfig: ServerConfig, remember?: boolean) => {
+    async (nextConfig: ServerConfig, remember?: boolean, connectionName?: string) => {
+      reconnectConfigRef.current = nextConfig;
+      cancelReconnect();
       setSetupFormConfig(nextConfig);
       setIsConnecting(true);
       setConnectError(null);
       setHealth({ status: "checking" });
 
       try {
+        // Phase 1: health check only — fast timeout, single connection
         const healthResponse = await getHealth(nextConfig);
 
         if (!healthResponse.healthy) {
           throw new Error("Server responded but is not healthy");
         }
 
-        const [nextProviders, nextSessions, workspaceMeta] = await Promise.all([
-          getProviders(nextConfig).catch(() => []),
-          getSessions(nextConfig),
-          fetchWorkspaceMeta(nextConfig),
-        ]);
-
-        const storedLastSessionId = loadLastSession();
-        const preferredSessionId =
-          nextSessions.find((session) => session.id === storedLastSessionId)?.id ??
-          nextSessions[0]?.id ??
-          null;
-
+        // Phase 2: health passed — persist config and show connected UI immediately
         setConfig(nextConfig);
         if (remember !== undefined) {
           saveRememberConnection(remember);
@@ -499,52 +546,121 @@ export default function App() {
         if (remember || loadRememberConnection()) {
           saveServerConfig(nextConfig);
         }
-        saveServerProfile(nextConfig);
+        saveServerProfile(nextConfig, connectionName);
         setKnownProfiles(detectKnownServerProfiles());
-        setProviders(nextProviders);
-        setProjects(workspaceMeta.projects);
-        setCurrentProject(workspaceMeta.currentProject);
-        setPathInfo(workspaceMeta.pathInfo);
-        setVcsInfo(workspaceMeta.vcsInfo);
-        setAgents(workspaceMeta.agents);
-        setAvailableTools(workspaceMeta.tools);
-        setSessions(nextSessions);
-        saveSessionsCache(nextSessions);
-        selectedSessionIdRef.current = preferredSessionId;
-        setSelectedSessionId(preferredSessionId);
-        saveLastSession(preferredSessionId);
+        isConnectedRef.current = true;
         setHealth({ status: "connected", version: healthResponse.version });
+        setConnectError(null);
         setShowSetup(false);
         setShowDocs(false);
+        cancelReconnect();
 
-        if (preferredSessionId) {
-          const nextMessages = await getSessionMessages(nextConfig, preferredSessionId);
-          setMessages(nextMessages);
-        } else {
-          setMessages([]);
-        }
-
+        // Start SSE stream immediately — UI is interactive now
         startEventStream(nextConfig);
+
+        // Phase 3: load data sequentially so we never exceed 2 simultaneous connections.
+        // Each call has its own .catch() so a single failure cannot block the rest.
+        // isInitialLoadingRef blocks SSE-triggered refreshes from racing with this load.
+        isInitialLoadingRef.current = true;
+        try {
+          // Sessions first — most critical for UX
+          const nextSessions = await getSessions(nextConfig).catch(() => [] as Awaited<ReturnType<typeof getSessions>>);
+          const storedLastSessionId = loadLastSession();
+          const preferredSessionId =
+            nextSessions.find((session) => session.id === storedLastSessionId)?.id ??
+            nextSessions[0]?.id ??
+            null;
+          setSessions(nextSessions);
+          saveSessionsCache(nextSessions);
+          selectedSessionIdRef.current = preferredSessionId;
+          setSelectedSessionId(preferredSessionId);
+          saveLastSession(preferredSessionId);
+
+          // Providers next
+          const nextProviders = await getProviders(nextConfig).catch(() => [] as Awaited<ReturnType<typeof getProviders>>);
+          setProviders(nextProviders);
+
+          // Workspace meta last (internally fires 6 parallel calls via Promise.allSettled,
+          // but only after sessions and providers are already rendered)
+          const workspaceMeta = await fetchWorkspaceMeta(nextConfig).catch(() => ({
+            projects: [] as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["projects"],
+            currentProject: null as unknown as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["currentProject"],
+            pathInfo: null as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["pathInfo"],
+            vcsInfo: null as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["vcsInfo"],
+            agents: [] as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["agents"],
+            tools: [] as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["tools"],
+          }));
+          setProjects(workspaceMeta.projects);
+          setCurrentProject(workspaceMeta.currentProject);
+          setPathInfo(workspaceMeta.pathInfo);
+          setVcsInfo(workspaceMeta.vcsInfo);
+          setAgents(workspaceMeta.agents);
+          setAvailableTools(workspaceMeta.tools);
+
+          // Messages for the selected session — last, least urgent
+          if (preferredSessionId) {
+            const nextMessages = await getSessionMessages(nextConfig, preferredSessionId).catch(() => []);
+            setMessages(nextMessages);
+          } else {
+            setMessages([]);
+          }
+        } finally {
+          isInitialLoadingRef.current = false;
+        }
       } catch (error) {
+        isConnectedRef.current = false;
         setConnectError(toErrorMessage(error));
         setHealth({ status: "error", error: toErrorMessage(error) });
         setStreamState("offline");
         setShowSetup(true);
+        scheduleReconnectRef.current?.();
       } finally {
         setIsConnecting(false);
       }
     },
-    [fetchWorkspaceMeta, startEventStream],
+    [cancelReconnect, fetchWorkspaceMeta, startEventStream],
   );
 
-  // Auto-connect if remember was set
+  // Wire scheduleReconnect after connectToServer is defined (avoids circular useCallback deps)
+  useEffect(() => {
+    scheduleReconnectRef.current = () => {
+      if (!reconnectConfigRef.current) return;
+      cancelReconnect();
+
+      let remaining = Math.round(RECONNECT_DELAY_MS / 1000);
+      setReconnectCountdown(remaining);
+
+      reconnectCountdownTimerRef.current = window.setInterval(() => {
+        remaining -= 1;
+        setReconnectCountdown(remaining > 0 ? remaining : null);
+        if (remaining <= 0) {
+          window.clearInterval(reconnectCountdownTimerRef.current!);
+          reconnectCountdownTimerRef.current = null;
+        }
+      }, 1000);
+
+      reconnectTimerRef.current = window.setTimeout(() => {
+        reconnectTimerRef.current = null;
+        const cfg = reconnectConfigRef.current;
+        if (cfg) {
+          setTimeout(() => void connectToServer(cfg), 0);
+        }
+      }, RECONNECT_DELAY_MS);
+    };
+  }, [cancelReconnect, connectToServer]);
+
+  // Auto-connect if remember was set — defer via setTimeout so the UI renders first
   useEffect(() => {
     if (bootstrap.config && bootstrap.rememberConnection) {
-      void connectToServer(bootstrap.config);
+      const id = setTimeout(() => void connectToServer(bootstrap.config!), 0);
+      return () => clearTimeout(id);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleLogout = useCallback(() => {
+    reconnectConfigRef.current = null;
+    isConnectedRef.current = false;
+    cancelReconnect();
     streamCleanupRef.current?.();
     saveRememberConnection(false);
     setConfig(null);
@@ -557,13 +673,17 @@ export default function App() {
     setStreamState("offline");
     setSetupFormConfig(DEFAULT_SERVER_CONFIG);
     setShowSetup(true);
-  }, []);
+  }, [cancelReconnect]);
 
   const handleSelectSession = useCallback(
     async (sessionId: string) => {
       const activeConfig = configRef.current;
 
-      if (!activeConfig) {
+      if (!activeConfig || !isConnectedRef.current) {
+        // Just update selection; don't attempt a network call when offline
+        selectedSessionIdRef.current = sessionId;
+        setSelectedSessionId(sessionId);
+        saveLastSession(sessionId);
         return;
       }
 
@@ -839,6 +959,16 @@ export default function App() {
     [],
   );
 
+  const handleDeleteProfile = useCallback((profileId: string) => {
+    deleteServerProfile(profileId);
+    setKnownProfiles(detectKnownServerProfiles());
+  }, []);
+
+  const handleRenameProfile = useCallback((profileId: string, newLabel: string) => {
+    renameServerProfile(profileId, newLabel);
+    setKnownProfiles(detectKnownServerProfiles());
+  }, []);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -868,15 +998,18 @@ export default function App() {
         knownProfiles={knownProfiles}
         isBusy={isConnecting}
         error={connectError}
-        onSubmit={(nextConfig, remember) => {
-          void connectToServer(nextConfig, remember);
+        reconnectCountdown={reconnectCountdown}
+        onSubmit={(nextConfig, remember, connectionName) => {
+          setTimeout(() => void connectToServer(nextConfig, remember, connectionName), 0);
         }}
         onConnectKnownProfile={(profile) => {
-          void connectToServer(profile);
+          setTimeout(() => void connectToServer(profile), 0);
         }}
         onSelectKnownProfile={(profile) => {
           setSetupFormConfig(profile);
         }}
+        onDeleteProfile={handleDeleteProfile}
+        onRenameProfile={handleRenameProfile}
         onOpenDocs={() => setShowDocs(true)}
         onCancel={config ? () => setShowSetup(false) : undefined}
       />

@@ -1,10 +1,9 @@
 // sw.js — OpenCode Client Service Worker
-// Cache-first for static assets, network-first for API calls.
+// Network-first for all same-origin requests so updated JS/CSS chunks are
+// always fetched fresh. Falls back to cache when offline.
 
-const CACHE_NAME = "opencode-v1";
+const CACHE_NAME = "opencode-v3";
 
-// Assets to pre-cache on install (Vite hashes the filenames at build time,
-// so we only pre-cache the shell files we know by path)
 const PRECACHE_URLS = [
   "/",
   "/index.html",
@@ -19,7 +18,6 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE_URLS)),
   );
-  // Activate immediately without waiting for existing tabs to close
   self.skipWaiting();
 });
 
@@ -34,7 +32,6 @@ self.addEventListener("activate", (event) => {
       ),
     ),
   );
-  // Take control of all clients immediately
   self.clients.claim();
 });
 
@@ -43,38 +40,22 @@ self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Never intercept non-GET or cross-origin API requests
-  // (the OpenCode server lives on a different origin/port)
+  // Never intercept non-GET or cross-origin requests
   if (request.method !== "GET") return;
   if (url.origin !== self.location.origin) return;
 
-  // Network-first for HTML navigation requests so users always get fresh shell
-  if (request.mode === "navigate") {
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
+  // Network-first for everything: always try to fetch fresh, cache as backup.
+  // This prevents stale JS/CSS chunks from causing duplicate-React errors after
+  // a build update.
+  event.respondWith(
+    fetch(request)
+      .then((response) => {
+        if (response.ok && response.type === "basic") {
           const clone = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
-          return response;
-        })
-        .catch(() => caches.match("/index.html")),
-    );
-    return;
-  }
-
-  // Cache-first for everything else (JS/CSS/images/fonts hashed by Vite)
-  event.respondWith(
-    caches.match(request).then((cached) => {
-      if (cached) return cached;
-
-      return fetch(request).then((response) => {
-        // Only cache successful same-origin responses
-        if (!response.ok || response.type !== "basic") return response;
-
-        const clone = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+        }
         return response;
-      });
-    }),
+      })
+      .catch(() => caches.match(request).then((cached) => cached ?? Response.error())),
   );
 });

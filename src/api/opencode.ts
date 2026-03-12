@@ -117,11 +117,33 @@ async function responseText(response: Response) {
   }
 }
 
-async function requestRaw(config: ServerConfig, path: string, init: RequestInit = {}) {
-  const response = await fetch(buildUrl(config, path), {
+const HEALTH_TIMEOUT_MS = 5_000;
+const API_TIMEOUT_MS = 10_000;
+
+function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const existingSignal = init.signal as AbortSignal | undefined;
+
+  // Forward any existing abort signal
+  if (existingSignal) {
+    if (existingSignal.aborted) {
+      controller.abort(existingSignal.reason);
+    } else {
+      existingSignal.addEventListener("abort", () => controller.abort(existingSignal.reason), { once: true });
+    }
+  }
+
+  const timer = setTimeout(() => controller.abort(new DOMException("Request timed out", "TimeoutError")), timeoutMs);
+
+  return fetch(url, { ...init, signal: controller.signal })
+    .finally(() => clearTimeout(timer));
+}
+
+async function requestRaw(config: ServerConfig, path: string, init: RequestInit = {}, timeoutMs = API_TIMEOUT_MS) {
+  const response = await fetchWithTimeout(buildUrl(config, path), {
     ...init,
     headers: createHeaders(config, init.headers),
-  });
+  }, timeoutMs);
 
   if (!response.ok) {
     const details = await responseText(response);
@@ -134,8 +156,8 @@ async function requestRaw(config: ServerConfig, path: string, init: RequestInit 
   return response;
 }
 
-async function requestJson<T>(config: ServerConfig, path: string, init: RequestInit = {}) {
-  const response = await requestRaw(config, path, init);
+async function requestJson<T>(config: ServerConfig, path: string, init: RequestInit = {}, timeoutMs = API_TIMEOUT_MS) {
+  const response = await requestRaw(config, path, init, timeoutMs);
   const text = await responseText(response);
 
   if (!text) {
@@ -145,8 +167,8 @@ async function requestJson<T>(config: ServerConfig, path: string, init: RequestI
   return JSON.parse(text) as T;
 }
 
-async function requestMaybeJson<T>(config: ServerConfig, path: string, init: RequestInit = {}) {
-  const response = await requestRaw(config, path, init);
+async function requestMaybeJson<T>(config: ServerConfig, path: string, init: RequestInit = {}, timeoutMs = API_TIMEOUT_MS) {
+  const response = await requestRaw(config, path, init, timeoutMs);
   const text = await responseText(response);
 
   if (!text) {
@@ -555,7 +577,7 @@ export function toErrorMessage(error: unknown) {
 export async function getHealth(config: ServerConfig): Promise<HealthResponse> {
   const payload = await requestJson<HealthResponse>(config, "/global/health", {
     headers: { Accept: "application/json" },
-  });
+  }, HEALTH_TIMEOUT_MS);
 
   return payload ?? { healthy: false };
 }

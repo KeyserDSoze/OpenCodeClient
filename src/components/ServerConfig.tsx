@@ -7,7 +7,8 @@ interface ServerConfigProps {
   initialValue: ServerConfigShape;
   isBusy: boolean;
   error?: string | null;
-  onSubmit: (config: ServerConfigShape, remember: boolean) => void;
+  reconnectCountdown?: number | null;
+  onSubmit: (config: ServerConfigShape, remember: boolean, connectionName?: string) => void;
   onCancel?: () => void;
 }
 
@@ -15,18 +16,21 @@ export function ServerConfig({
   initialValue,
   isBusy,
   error,
+  reconnectCountdown,
   onSubmit,
   onCancel,
 }: ServerConfigProps) {
   const [serverUrl, setServerUrl] = useState(initialValue.serverUrl);
   const [username, setUsername] = useState(initialValue.username);
   const [password, setPassword] = useState(initialValue.password);
+  const [connectionName, setConnectionName] = useState(initialValue.connectionName ?? "");
   const [remember, setRemember] = useState(() => loadRememberConnection());
 
   useEffect(() => {
     setServerUrl(initialValue.serverUrl);
     setUsername(initialValue.username);
     setPassword(initialValue.password);
+    setConnectionName(initialValue.connectionName ?? "");
   }, [initialValue]);
 
   const isValid = serverUrl.trim() && username.trim() && password.trim();
@@ -41,6 +45,7 @@ export function ServerConfig({
         password,
       },
       remember,
+      connectionName.trim() || undefined,
     );
   };
 
@@ -62,6 +67,19 @@ export function ServerConfig({
 
       <div className="login-fields">
         <label className="login-field">
+          <span className="login-label">Connection name <span className="login-label-hint">(optional)</span></span>
+          <input
+            className="login-input"
+            type="text"
+            value={connectionName}
+            onChange={(event) => setConnectionName(event.target.value)}
+            placeholder="e.g. Home server, Azure VM…"
+            autoComplete="off"
+            maxLength={60}
+          />
+        </label>
+
+        <label className="login-field">
           <span className="login-label">Server URL</span>
           <input
             className="login-input"
@@ -70,7 +88,6 @@ export function ServerConfig({
             onChange={(event) => setServerUrl(event.target.value)}
             placeholder="https://ai.example.com"
             autoComplete="url"
-            autoFocus
           />
         </label>
 
@@ -110,6 +127,9 @@ export function ServerConfig({
       </label>
 
       {error ? <div className="login-error">{error}</div> : null}
+      {reconnectCountdown != null && !isBusy ? (
+        <div className="login-reconnect">Retrying in {reconnectCountdown}s…</div>
+      ) : null}
 
       <div className="login-actions">
         <button className="login-btn-primary" type="submit" disabled={!isValid || isBusy}>
