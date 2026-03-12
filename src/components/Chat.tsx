@@ -8,6 +8,8 @@ import type {
   SessionMessage,
   SessionSummary,
 } from "../types/opencode";
+import { extractMessageText } from "../api/opencode";
+import { useSpeechRecognition, useTts } from "../hooks/useSpeech";
 import { ApiTools } from "./ApiTools";
 import { Message } from "./Message";
 
@@ -57,9 +59,79 @@ export function Chat({
   const [draft, setDraft] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showApiTools, setShowApiTools] = useState(false);
+  // STT auto-send: default true → invia subito; false → appende al draft
+  const [sttAutoSend, setSttAutoSend] = useState(true);
   const endRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Keep a ref so the STT onEnd callback always sees the latest value
+  const sttAutoSendRef = useRef(sttAutoSend);
+  const draftRef = useRef(draft);
 
+  useEffect(() => { sttAutoSendRef.current = sttAutoSend; }, [sttAutoSend]);
+  useEffect(() => { draftRef.current = draft; }, [draft]);
+
+  // ── TTS: track which assistant message ids have already been spoken ──────
+  const spokenIdsRef = useRef<Set<string>>(new Set());
+  const tts = useTts({ lang: "it-IT", rate: 1.05 });
+
+  // ── STT ──────────────────────────────────────────────────────────────────
+  const resizeTextarea = () => {
+    if (!textareaRef.current) return;
+    textareaRef.current.style.height = "auto";
+    textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 240)}px`;
+  };
+
+  const stt = useSpeechRecognition({
+    lang: "it-IT",
+    onEnd: (transcript) => {
+      if (!transcript.trim()) return;
+      if (sttAutoSendRef.current) {
+        // Auto-send: svuota draft e invia
+        setDraft("");
+        if (textareaRef.current) textareaRef.current.style.height = "auto";
+        void onSend(transcript.trim());
+      } else {
+        // Append: aggiunge al draft esistente con spazio
+        setDraft((prev) => {
+          const base = prev.trimEnd();
+          const next = base ? `${base} ${transcript.trim()}` : transcript.trim();
+          return next;
+        });
+        // Resize dopo il render
+        setTimeout(resizeTextarea, 0);
+      }
+    },
+  });
+
+  // ── TTS: speak new assistant messages (or their deltas) ──────────────────
+  useEffect(() => {
+    if (!tts.enabled) return;
+
+    messages.forEach((msg) => {
+      const role = msg.info.role.toLowerCase();
+      if (!role.includes("assistant")) return;
+      if (msg.optimistic) return;
+
+      const id = msg.info.id;
+      const text = extractMessageText(msg);
+      if (!text) return;
+
+      if (!spokenIdsRef.current.has(id)) {
+        // New message we haven't started speaking yet
+        spokenIdsRef.current.add(id);
+        tts.enqueue(text);
+      }
+    });
+  }, [messages, tts]);
+
+  // ── Stop TTS when TTS is disabled ────────────────────────────────────────
+  useEffect(() => {
+    if (!tts.enabled) {
+      spokenIdsRef.current.clear();
+    }
+  }, [tts.enabled]);
+
+  // ── General ──────────────────────────────────────────────────────────────
   const disabled = isSending || draft.trim().length === 0;
   const hasSelectedAgentOption = !selectedAgent || agents.some((agent) => agent.id === selectedAgent);
   const hasSelectedModelOption =
@@ -90,7 +162,6 @@ export function Chat({
     if (!draft.trim()) return;
     const nextValue = draft.trim();
     setDraft("");
-    // Auto-resize reset
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
@@ -102,11 +173,13 @@ export function Chat({
     await submitDraft();
   };
 
+  // Enter → send; Shift+Enter → newline
   const handleKeyDown = async (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       await submitDraft();
     }
+    // Shift+Enter falls through naturally, inserting a newline
   };
 
   const handleTextareaInput = (event: SyntheticEvent<HTMLTextAreaElement>) => {
@@ -248,12 +321,19 @@ export function Chat({
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={handleKeyDown}
             onInput={handleTextareaInput}
-            placeholder="Message OpenCode..."
+            placeholder={
+              stt.status === "listening"
+                ? sttAutoSend
+                  ? "Listening... (will send automatically)"
+                  : "Listening... (will append to draft)"
+                : "Message OpenCode... (Enter to send, Shift+Enter for newline)"
+            }
             rows={1}
           />
 
           <div className="composer-footer">
             <div className="composer-footer-left">
+              {/* Advanced options toggle */}
               <button
                 className={`composer-btn-icon ${showAdvanced ? "active" : ""}`}
                 type="button"
@@ -278,6 +358,7 @@ export function Chat({
                 )}
               </button>
 
+              {/* API tools toggle */}
               <button
                 className={`composer-btn-icon ${showApiTools ? "active" : ""}`}
                 type="button"
@@ -292,6 +373,7 @@ export function Chat({
                 </svg>
               </button>
 
+              {/* Abort button */}
               {session && onAbort && isSending && (
                 <button
                   className="composer-btn-abort"
@@ -306,7 +388,95 @@ export function Chat({
                 </button>
               )}
 
-              <span className="composer-hint">⌘↵ to send</span>
+              {/* STT mic button + auto-send toggle */}
+              {stt.status !== "unsupported" && (
+                <>
+                  <button
+                    className={`composer-btn-icon composer-btn-mic ${stt.status === "listening" ? "mic-active" : ""} ${stt.status === "error" ? "mic-error" : ""}`}
+                    type="button"
+                    onClick={() => {
+                      if (stt.status === "listening") {
+                        stt.stop();
+                      } else {
+                        stt.start();
+                      }
+                    }}
+                    title={
+                      stt.status === "listening"
+                        ? "Stop listening"
+                        : sttAutoSend
+                          ? "Voice input (auto-send on)"
+                          : "Voice input (auto-send off — will append)"
+                    }
+                    aria-label={stt.status === "listening" ? "Stop listening" : "Voice input"}
+                  >
+                    {stt.status === "listening" ? (
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                        <line x1="12" y1="1" x2="12" y2="23" />
+                        <line x1="8" y1="5" x2="8" y2="19" />
+                        <line x1="4" y1="9" x2="4" y2="15" />
+                        <line x1="16" y1="5" x2="16" y2="19" />
+                        <line x1="20" y1="9" x2="20" y2="15" />
+                      </svg>
+                    ) : (
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                        <line x1="12" y1="19" x2="12" y2="23" />
+                        <line x1="8" y1="23" x2="16" y2="23" />
+                      </svg>
+                    )}
+                  </button>
+
+                  {/* Auto-send pill toggle — only visible when STT is supported */}
+                  <button
+                    className={`stt-autosend-toggle ${sttAutoSend ? "stt-autosend-on" : "stt-autosend-off"}`}
+                    type="button"
+                    onClick={() => setSttAutoSend((v) => !v)}
+                    title={sttAutoSend ? "Auto-send ON — click to disable (voice will append to draft instead)" : "Auto-send OFF — click to enable (voice will send immediately)"}
+                    aria-label={sttAutoSend ? "Auto-send enabled" : "Auto-send disabled"}
+                    aria-pressed={sttAutoSend}
+                  >
+                    {sttAutoSend ? "auto-send" : "append"}
+                  </button>
+                </>
+              )}
+
+              {/* TTS toggle */}
+              {tts.status !== "unsupported" && (
+                <button
+                  className={`composer-btn-icon composer-btn-tts ${tts.enabled ? "tts-active" : ""} ${tts.status === "speaking" ? "tts-speaking" : ""}`}
+                  type="button"
+                  onClick={tts.toggle}
+                  title={tts.enabled ? "Disable read-aloud" : "Enable read-aloud (auto-reads assistant responses)"}
+                  aria-label={tts.enabled ? "Disable text-to-speech" : "Enable text-to-speech"}
+                  aria-pressed={tts.enabled}
+                >
+                  {tts.status === "speaking" ? (
+                    // Speaker with sound waves while speaking
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                    </svg>
+                  ) : (
+                    // Speaker icon (muted look when disabled)
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                      {tts.enabled ? (
+                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                      ) : (
+                        <>
+                          <line x1="23" y1="9" x2="17" y2="15" />
+                          <line x1="17" y1="9" x2="23" y2="15" />
+                        </>
+                      )}
+                    </svg>
+                  )}
+                </button>
+              )}
+
+              <span className="composer-hint">⇧↵ newline · ↵ send</span>
             </div>
 
             <button

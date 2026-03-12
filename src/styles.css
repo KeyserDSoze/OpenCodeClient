@@ -1439,6 +1439,72 @@ button {
   color: #fff;
 }
 
+/* ─── STT auto-send pill toggle ─── */
+.stt-autosend-toggle {
+  font-size: 10px;
+  font-weight: 500;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+
+.stt-autosend-on {
+  background: var(--accent-dim);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
+.stt-autosend-off {
+  background: var(--bg-3);
+  color: var(--text-3);
+  border-color: var(--border);
+}
+
+.stt-autosend-toggle:hover {
+  opacity: 0.8;
+}
+
+/* ─── Microphone (STT) button ─── */
+.composer-btn-mic.mic-active {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+.composer-btn-mic.mic-active svg {
+  stroke: var(--danger);
+}
+
+.composer-btn-mic.mic-error {
+  color: var(--danger);
+  opacity: 0.6;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  50%       { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+}
+
+/* ─── Text-to-speech (TTS) button ─── */
+.composer-btn-tts.tts-active {
+  background: var(--accent-dim);
+  color: var(--accent-text);
+}
+
+.composer-btn-tts.tts-speaking {
+  color: var(--accent);
+  animation: tts-wave 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes tts-wave {
+  from { opacity: 0.65; }
+  to   { opacity: 1; }
+}
+
 /* API Tools panel */
 .api-tools-panel {
   border-top: 1px solid var(--border);
