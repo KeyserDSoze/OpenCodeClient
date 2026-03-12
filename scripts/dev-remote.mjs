@@ -22,6 +22,7 @@ log(`Suggested username: ${remoteUsername}`);
 const child = spawn(npmCommand, ["run", "dev", "--", "--open"], {
   stdio: "inherit",
   env: process.env,
+  shell: isWindows,
 });
 
 child.on("error", (error) => {

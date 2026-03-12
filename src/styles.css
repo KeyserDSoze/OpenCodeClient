@@ -1,24 +1,27 @@
 @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap");
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
   font-family: "IBM Plex Sans", sans-serif;
-  color: #163236;
+  color: #e8f4f6;
   background:
-    radial-gradient(circle at top left, rgba(20, 184, 166, 0.16), transparent 32%),
-    radial-gradient(circle at top right, rgba(245, 158, 11, 0.16), transparent 30%),
-    linear-gradient(180deg, #f6f1e8 0%, #efe7db 100%);
-  --page: #f6f1e8;
-  --panel: rgba(255, 250, 244, 0.82);
-  --panel-strong: rgba(255, 252, 247, 0.95);
-  --line: rgba(22, 50, 54, 0.12);
-  --line-strong: rgba(22, 50, 54, 0.2);
-  --ink: #163236;
-  --muted: #607a7d;
-  --accent: #0f766e;
-  --accent-soft: rgba(15, 118, 110, 0.12);
-  --warm: #c26a1b;
-  --shadow: 0 20px 60px rgba(75, 51, 18, 0.12);
+    radial-gradient(circle at top left, rgba(20, 184, 166, 0.16), transparent 30%),
+    radial-gradient(circle at top right, rgba(249, 115, 22, 0.12), transparent 28%),
+    linear-gradient(180deg, #071016 0%, #09151d 45%, #050b11 100%);
+  --page: #071016;
+  --panel: rgba(9, 17, 25, 0.84);
+  --panel-strong: rgba(9, 17, 25, 0.96);
+  --surface-soft: rgba(18, 29, 40, 0.72);
+  --surface-strong: rgba(12, 21, 30, 0.92);
+  --surface-elevated: rgba(23, 37, 50, 0.88);
+  --line: rgba(139, 168, 181, 0.14);
+  --line-strong: rgba(139, 168, 181, 0.24);
+  --ink: #e8f4f6;
+  --muted: #90a9b3;
+  --accent: #14b8a6;
+  --accent-soft: rgba(20, 184, 166, 0.16);
+  --warm: #f59e0b;
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
   --radius-xl: 28px;
   --radius-lg: 22px;
   --radius-md: 16px;
@@ -38,17 +41,18 @@ body {
   margin: 0;
   min-height: 100vh;
   color: var(--ink);
+  background: var(--page);
 }
 
 body::before {
   content: "";
   position: fixed;
   inset: 0;
-  background-image: linear-gradient(rgba(22, 50, 54, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(22, 50, 54, 0.03) 1px, transparent 1px);
+  background-image: linear-gradient(rgba(130, 161, 176, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(130, 161, 176, 0.05) 1px, transparent 1px);
   background-size: 42px 42px;
   pointer-events: none;
-  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.45), transparent 80%);
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.8), transparent 82%);
 }
 
 button,
@@ -115,7 +119,8 @@ button {
   flex-direction: column;
   justify-content: flex-end;
   background:
-    linear-gradient(140deg, rgba(15, 118, 110, 0.9), rgba(12, 74, 110, 0.76)),
+    radial-gradient(circle at top right, rgba(249, 115, 22, 0.22), transparent 32%),
+    linear-gradient(145deg, rgba(8, 73, 66, 0.96), rgba(8, 23, 35, 0.94)),
     var(--panel);
   color: #f3fbfb;
 }
@@ -160,7 +165,7 @@ button {
 .known-profile-row,
 .docs-note {
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.58);
+  background: var(--surface-soft);
   border-radius: 20px;
   padding: 16px;
 }
@@ -203,7 +208,7 @@ button {
   margin: 0;
   border: 1px solid var(--line);
   border-radius: 20px;
-  background: rgba(24, 31, 37, 0.95);
+  background: rgba(4, 9, 15, 0.98);
   color: #edf6f7;
   padding: 18px;
   overflow: auto;
@@ -273,7 +278,7 @@ button {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: var(--panel-strong);
+  background: var(--surface-strong);
   color: var(--ink);
   padding: 15px 16px;
   outline: none;
@@ -283,8 +288,8 @@ button {
 .field input:focus,
 .field select:focus,
 .composer textarea:focus {
-  border-color: rgba(15, 118, 110, 0.55);
-  box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.12);
+  border-color: rgba(20, 184, 166, 0.55);
+  box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.12);
   transform: translateY(-1px);
 }
 
@@ -300,7 +305,7 @@ button {
 .chat-empty,
 .empty-card {
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.48);
+  background: var(--surface-soft);
   border-radius: 18px;
 }
 
@@ -345,14 +350,14 @@ button {
 }
 
 .button-primary {
-  background: linear-gradient(135deg, var(--accent), #155e75);
+  background: linear-gradient(135deg, var(--accent), #0f766e);
   color: #f7fdfd;
-  box-shadow: 0 16px 32px rgba(15, 118, 110, 0.24);
+  box-shadow: 0 16px 32px rgba(20, 184, 166, 0.22);
 }
 
 .button-secondary,
 .icon-button {
-  background: rgba(255, 255, 255, 0.68);
+  background: rgba(16, 28, 39, 0.92);
   color: var(--ink);
   border: 1px solid var(--line);
 }
@@ -489,7 +494,7 @@ button {
 .empty-card,
 .chat-empty {
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.58);
+  background: var(--surface-soft);
   border-radius: 20px;
 }
 
@@ -498,8 +503,8 @@ button {
 }
 
 .session-card-active {
-  border-color: rgba(15, 118, 110, 0.4);
-  background: linear-gradient(135deg, rgba(15, 118, 110, 0.12), rgba(255, 255, 255, 0.68));
+  border-color: rgba(20, 184, 166, 0.4);
+  background: linear-gradient(135deg, rgba(20, 184, 166, 0.18), rgba(16, 28, 39, 0.88));
 }
 
 .meta-card,
@@ -573,15 +578,15 @@ button {
 }
 
 .message-card-assistant {
-  background: linear-gradient(135deg, rgba(15, 118, 110, 0.1), rgba(255, 255, 255, 0.7));
+  background: linear-gradient(135deg, rgba(20, 184, 166, 0.16), rgba(12, 21, 30, 0.96));
 }
 
 .message-card-user {
-  background: linear-gradient(135deg, rgba(194, 106, 27, 0.11), rgba(255, 255, 255, 0.7));
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.16), rgba(12, 21, 30, 0.96));
 }
 
 .message-card-system {
-  background: rgba(255, 255, 255, 0.64);
+  background: rgba(16, 28, 39, 0.94);
 }
 
 .message-meta {
@@ -604,7 +609,7 @@ button {
 .message-request-chip {
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(16, 28, 39, 0.96);
   color: var(--ink);
   padding: 6px 10px;
   font-family: "IBM Plex Mono", monospace;
@@ -674,7 +679,7 @@ button {
 .tool-chip {
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(16, 28, 39, 0.96);
   color: var(--ink);
   padding: 10px 12px;
   font-family: "IBM Plex Mono", monospace;
@@ -682,8 +687,8 @@ button {
 }
 
 .tool-chip-active {
-  border-color: rgba(15, 118, 110, 0.4);
-  background: linear-gradient(135deg, rgba(15, 118, 110, 0.16), rgba(21, 94, 117, 0.12));
+  border-color: rgba(20, 184, 166, 0.45);
+  background: linear-gradient(135deg, rgba(20, 184, 166, 0.2), rgba(15, 118, 110, 0.16));
 }
 
 .mode-toggle-buttons {
@@ -692,7 +697,7 @@ button {
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 4px;
-  background: rgba(255, 255, 255, 0.68);
+  background: rgba(16, 28, 39, 0.94);
 }
 
 .mode-toggle-button {
@@ -704,7 +709,7 @@ button {
 }
 
 .mode-toggle-button-active {
-  background: linear-gradient(135deg, rgba(15, 118, 110, 0.18), rgba(21, 94, 117, 0.2));
+  background: linear-gradient(135deg, rgba(20, 184, 166, 0.24), rgba(15, 118, 110, 0.18));
   color: var(--ink);
 }
 
@@ -740,7 +745,7 @@ button {
 .tool-output {
   border: 1px solid var(--line);
   border-radius: 20px;
-  background: rgba(255, 255, 255, 0.58);
+  background: var(--surface-soft);
 }
 
 .tool-card,
@@ -788,8 +793,8 @@ button {
 
 .notice-error {
   border-color: rgba(220, 38, 38, 0.25);
-  background: rgba(254, 242, 242, 0.9);
-  color: #7f1d1d;
+  background: rgba(68, 18, 24, 0.92);
+  color: #fecaca;
 }
 
 .inline-status {

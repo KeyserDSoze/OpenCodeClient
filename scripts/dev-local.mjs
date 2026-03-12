@@ -25,6 +25,7 @@ function run(command, commandArgs, env) {
   return spawn(command, commandArgs, {
     stdio: "inherit",
     env,
+    shell: isWindows,
   });
 }
 
