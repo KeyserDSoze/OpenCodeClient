@@ -474,6 +474,88 @@ export async function getToolIds(config: ServerConfig): Promise<string[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Find / File content
+// ---------------------------------------------------------------------------
+
+export async function searchInFiles(config: ServerConfig, pattern: string): Promise<FileSearchResult[]> {
+  const client = createClient(config);
+  const { data, error } = await client.find.text({ query: { pattern }, throwOnError: false });
+  if (error || !data) return [];
+  return (data as Array<{ path: { text: string }; lines: { text: string }; line_number: number }>).map((item) => ({
+    path: item.path.text,
+    lineNumber: item.line_number,
+    lines: item.lines.text,
+    raw: item as unknown as UnknownRecord,
+  }));
+}
+
+export async function findFiles(config: ServerConfig, query: string): Promise<string[]> {
+  const client = createClient(config);
+  const { data, error } = await client.find.files({ query: { query }, throwOnError: false });
+  if (error || !data) return [];
+  if (Array.isArray(data)) {
+    return (data as string[]);
+  }
+  return [];
+}
+
+export async function readFileContent(config: ServerConfig, path: string): Promise<string> {
+  const client = createClient(config);
+  const { data, error } = await client.file.read({ query: { path }, throwOnError: false });
+  if (error || !data) return "";
+  const record = asRecord(data as unknown);
+  return typeof record.content === "string" ? record.content : JSON.stringify(data);
+}
+
+// ---------------------------------------------------------------------------
+// Session commands / shell
+// ---------------------------------------------------------------------------
+
+export async function executeSessionCommand(
+  config: ServerConfig,
+  sessionId: string,
+  input: { command: string; arguments?: string[] },
+): Promise<SessionMessage | null> {
+  const client = createClient(config);
+  const { data, error } = await client.session.command({
+    path: { id: sessionId },
+    // arguments is a single string in the SDK (space-joined)
+    body: { command: input.command, arguments: (input.arguments ?? []).join(" ") } as never,
+    throwOnError: false,
+  });
+  if (error || !data) return null;
+  // SessionCommandResponses[200] = { info: AssistantMessage; parts: Part[] }
+  const raw = data as { info: unknown; parts: unknown[] };
+  return sdkMessageToSessionMessage(raw as Parameters<typeof sdkMessageToSessionMessage>[0]);
+}
+
+export async function runShellCommand(
+  config: ServerConfig,
+  sessionId: string,
+  input: { command: string; agent?: string },
+): Promise<SessionMessage | null> {
+  const client = createClient(config);
+  // SessionShellResponses[200] = AssistantMessage (no info/parts wrapper)
+  const body: { command: string; agent: string } = {
+    command: input.command,
+    agent: input.agent ?? "coder",
+  };
+  const { data, error } = await client.session.shell({
+    path: { id: sessionId },
+    body: body as never,
+    throwOnError: false,
+  });
+  if (error || !data) return null;
+  // Wrap the bare AssistantMessage into the { info, parts } shape expected by sdkMessageToSessionMessage
+  const msg = data as Record<string, unknown>;
+  const wrapped = {
+    info: msg,
+    parts: Array.isArray(msg.parts) ? (msg.parts as unknown[]) : [],
+  };
+  return sdkMessageToSessionMessage(wrapped as Parameters<typeof sdkMessageToSessionMessage>[0]);
+}
+
+// ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
 
