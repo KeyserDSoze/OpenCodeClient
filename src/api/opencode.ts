@@ -23,7 +23,7 @@ import type {
 } from "../types/opencode";
 
 // ---------------------------------------------------------------------------
-// Client factory — one SDK client per ServerConfig
+// Client factory — one SDK client per ServerConfig, cached
 // ---------------------------------------------------------------------------
 
 function normalizeBaseUrl(serverUrl: string) {
@@ -39,14 +39,22 @@ function toBasicAuth(username: string, password: string) {
   return `Basic ${btoa(binary)}`;
 }
 
+let _cachedClientKey = "";
+let _cachedClient: OpencodeClient | null = null;
+
 function createClient(config: ServerConfig): OpencodeClient {
+  const key = `${config.serverUrl}|${config.username}|${config.password}`;
+  if (_cachedClient && _cachedClientKey === key) return _cachedClient;
+
   const authHeader = toBasicAuth(config.username, config.password);
-  return createOpencodeClient({
+  _cachedClient = createOpencodeClient({
     baseUrl: normalizeBaseUrl(config.serverUrl),
     headers: {
       Authorization: authHeader,
     },
   });
+  _cachedClientKey = key;
+  return _cachedClient;
 }
 
 // ---------------------------------------------------------------------------
@@ -737,7 +745,7 @@ export async function sendAsyncMessage(
 }
 
 // ---------------------------------------------------------------------------
-// SSE — subscribeToEvents
+// SSE — subscribeToEvents (direct fetch, bypasses SDK async generator)
 // ---------------------------------------------------------------------------
 
 function sdkEventToStreamEvent(event: SdkEvent): StreamEvent {
@@ -748,6 +756,21 @@ function sdkEventToStreamEvent(event: SdkEvent): StreamEvent {
   };
 }
 
+// Global event listeners so streamMessage can tap into the background SSE
+// without opening a second connection.
+type SseRawListener = (event: SdkEvent) => void;
+const _sseListeners = new Set<SseRawListener>();
+
+function addSseListener(fn: SseRawListener): () => void {
+  _sseListeners.add(fn);
+  return () => _sseListeners.delete(fn);
+}
+
+/**
+ * Parse raw SSE text chunks into events and dispatch them.
+ * Uses direct fetch + ReadableStream instead of the SDK's async generator
+ * to guarantee proper yielding to the browser event loop.
+ */
 export function subscribeToEvents(
   config: ServerConfig,
   handlers: {
@@ -757,20 +780,69 @@ export function subscribeToEvents(
   },
 ) {
   const controller = new AbortController();
+  const authHeader = toBasicAuth(config.username, config.password);
+  const url = `${normalizeBaseUrl(config.serverUrl)}/event`;
 
   void (async () => {
     try {
-      const client = createClient(config);
-      const result = await client.event.subscribe({
+      const response = await fetch(url, {
+        headers: {
+          Authorization: authHeader,
+          Accept: "text/event-stream",
+        },
         signal: controller.signal,
-        throwOnError: false,
       });
+
+      if (!response.ok) {
+        throw new Error(`SSE failed: ${response.status} ${response.statusText}`);
+      }
+      if (!response.body) {
+        throw new Error("No body in SSE response");
+      }
 
       handlers.onOpen?.();
 
-      for await (const event of result.stream) {
-        if (controller.signal.aborted) break;
-        handlers.onEvent(sdkEventToStreamEvent(event as SdkEvent));
+      const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done || controller.signal.aborted) break;
+
+        buffer += value;
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() ?? "";
+
+        for (const chunk of chunks) {
+          if (controller.signal.aborted) break;
+
+          const lines = chunk.split("\n");
+          const dataLines: string[] = [];
+          for (const line of lines) {
+            if (line.startsWith("data:")) {
+              dataLines.push(line.replace(/^data:\s*/, ""));
+            }
+          }
+
+          if (dataLines.length) {
+            try {
+              const data = JSON.parse(dataLines.join("\n")) as SdkEvent;
+              handlers.onEvent(sdkEventToStreamEvent(data));
+              // Notify streamMessage listeners
+              _sseListeners.forEach((fn) => fn(data));
+            } catch {
+              // ignore malformed JSON
+            }
+          }
+        }
+
+        // Yield to browser after processing each read chunk
+        await new Promise<void>((r) => setTimeout(r, 0));
+      }
+
+      // Stream ended normally — report so caller can reconnect
+      if (!controller.signal.aborted) {
+        handlers.onError?.(new Error("SSE stream ended"));
       }
     } catch (error) {
       if ((error as Error).name === "AbortError") return;
@@ -806,7 +878,7 @@ export function extractEventSessionId(event: StreamEvent): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// streamMessage — SDK-backed: promptAsync + event SSE
+// streamMessage — uses promptAsync + background SSE listener (no second connection)
 // ---------------------------------------------------------------------------
 
 export function streamMessage(
@@ -820,36 +892,17 @@ export function streamMessage(
   },
 ): () => void {
   const controller = new AbortController();
+  let removeSseListener: (() => void) | null = null;
 
   void (async () => {
     try {
       const client = createClient(config);
       const body = createPromptBody(input);
 
-      // Fire the prompt asynchronously — server will stream response via SSE
-      const { error: promptError } = await client.session.promptAsync({
-        path: { id: sessionId },
-        body: body as never,
-        signal: controller.signal,
-        throwOnError: false,
-      });
-
-      if (promptError) {
-        handlers.onError?.(new Error(toErrorMessage(promptError)));
-        handlers.onDone();
-        return;
-      }
-
-      // Now listen on the SSE event stream for tokens and completion
-      const result = await client.event.subscribe({
-        signal: controller.signal,
-        throwOnError: false,
-      });
-
-      for await (const rawEvent of result.stream) {
-        if (controller.signal.aborted) break;
-
-        const event = rawEvent as SdkEvent;
+      // Register listener on the background SSE stream BEFORE sending prompt
+      // so we don't miss any events.
+      removeSseListener = addSseListener((event: SdkEvent) => {
+        if (controller.signal.aborted) return;
 
         // Text delta from message part updates
         if (event.type === "message.part.updated") {
@@ -872,8 +925,9 @@ export function streamMessage(
         if (event.type === "session.idle") {
           const props = (event as { type: "session.idle"; properties: { sessionID: string } }).properties;
           if (props.sessionID === sessionId) {
+            removeSseListener?.();
+            removeSseListener = null;
             handlers.onDone();
-            return;
           }
         }
 
@@ -881,16 +935,31 @@ export function streamMessage(
         if (event.type === "session.error") {
           const props = (event as { type: "session.error"; properties: { sessionID?: string; error?: unknown } }).properties;
           if (!props.sessionID || props.sessionID === sessionId) {
+            removeSseListener?.();
+            removeSseListener = null;
             handlers.onError?.(new Error(String(props.error ?? "Session error")));
             handlers.onDone();
-            return;
           }
         }
-      }
+      });
 
-      // Stream ended without explicit idle event
-      handlers.onDone();
+      // Fire the prompt asynchronously — server will stream response via SSE
+      const { error: promptError } = await client.session.promptAsync({
+        path: { id: sessionId },
+        body: body as never,
+        signal: controller.signal,
+        throwOnError: false,
+      });
+
+      if (promptError) {
+        removeSseListener?.();
+        removeSseListener = null;
+        handlers.onError?.(new Error(toErrorMessage(promptError)));
+        handlers.onDone();
+      }
     } catch (error) {
+      removeSseListener?.();
+      removeSseListener = null;
       if ((error as Error).name === "AbortError") {
         handlers.onDone();
         return;
@@ -900,5 +969,9 @@ export function streamMessage(
     }
   })();
 
-  return () => controller.abort();
+  return () => {
+    removeSseListener?.();
+    removeSseListener = null;
+    controller.abort();
+  };
 }

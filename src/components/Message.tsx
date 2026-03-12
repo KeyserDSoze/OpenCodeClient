@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { extractMessageText } from "../api/opencode";
 import { highlightCode, parseMarkdown } from "../lib/markdown";
 import type { SessionMessage } from "../types/opencode";
@@ -134,7 +134,7 @@ function MarkdownBody({ text, isStreaming }: { text: string; isStreaming?: boole
   );
 }
 
-export function Message({ message, isStreaming, onRetry }: MessageProps) {
+export const Message = memo(function Message({ message, isStreaming, onRetry }: MessageProps) {
   const tone = roleTone(message.info.role);
   // Memoize text extraction — only recomputes when parts or streamingText change
   const text = useMemo(() => extractMessageText(message), [message.parts, message.streamingText]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -213,4 +213,4 @@ export function Message({ message, isStreaming, onRetry }: MessageProps) {
       {isUser && <UserAvatar />}
     </div>
   );
-}
+});

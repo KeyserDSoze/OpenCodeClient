@@ -397,7 +397,23 @@ export default function App() {
       const nextMessages = await getSessionMessages(activeConfig, sessionId, controller.signal);
 
       if (selectedSessionIdRef.current === sessionId) {
-        setMessages((current) => attachLocalRequestMeta(nextMessages, current));
+        setMessages((current) => {
+          // Skip React re-render if message list hasn't actually changed
+          if (
+            current.length === nextMessages.length &&
+            current.every((m, i) => {
+              const n = nextMessages[i];
+              return (
+                m.info.id === n.info.id &&
+                m.info.updatedAt === n.info.updatedAt &&
+                m.parts.length === n.parts.length
+              );
+            })
+          ) {
+            return current;
+          }
+          return attachLocalRequestMeta(nextMessages, current);
+        });
       }
     } finally {
       setIsLoadingMessages(false);
@@ -410,7 +426,20 @@ export default function App() {
 
       try {
         const nextSessions = await getSessions(activeConfig);
-        setSessions(nextSessions);
+
+        // Skip React re-render if session list hasn't changed
+        setSessions((current) => {
+          if (
+            current.length === nextSessions.length &&
+            current.every((s, i) => {
+              const n = nextSessions[i];
+              return s.id === n.id && s.title === n.title && s.status === n.status;
+            })
+          ) {
+            return current;
+          }
+          return nextSessions;
+        });
 
         const desiredSessionId =
           preferredSessionId ??
@@ -420,9 +449,12 @@ export default function App() {
           nextSessions[0]?.id ??
           null;
 
-        selectedSessionIdRef.current = desiredSessionId;
-        setSelectedSessionId(desiredSessionId);
-        saveLastSession(desiredSessionId);
+        // Only update selectedSessionId if it actually changed
+        if (selectedSessionIdRef.current !== desiredSessionId) {
+          selectedSessionIdRef.current = desiredSessionId;
+          setSelectedSessionId(desiredSessionId);
+          saveLastSession(desiredSessionId);
+        }
 
         if (!desiredSessionId) {
           setMessages([]);
@@ -446,7 +478,7 @@ export default function App() {
 
       sessionsRefreshTimerRef.current = window.setTimeout(() => {
         if (isConnectedRef.current && !isInitialLoadingRef.current) void loadSessions(activeConfig);
-      }, 280);
+      }, 2000);
     },
     [loadSessions],
   );
@@ -461,7 +493,7 @@ export default function App() {
 
       messagesRefreshTimerRef.current = window.setTimeout(() => {
         if (isConnectedRef.current && !isInitialLoadingRef.current) void loadMessages(activeConfig, sessionId);
-      }, 220);
+      }, 2000);
     },
     [loadMessages],
   );
@@ -486,20 +518,48 @@ export default function App() {
       streamCleanupRef.current?.();
       setStreamState("connecting");
 
+      // Buffer SSE events and flush on a throttled timer to prevent
+      // main-thread saturation from rapid React re-renders.
+      let eventBuffer: StreamEvent[] = [];
+      let flushTimer: number | null = null;
+      let needsSessionRefresh = false;
+      let needsMessageRefresh = false;
+
+      const flushEvents = () => {
+        flushTimer = null;
+
+        if (eventBuffer.length > 0) {
+          const batch = eventBuffer;
+          eventBuffer = [];
+          setEvents((current) => [...batch, ...current].slice(0, 10));
+        }
+
+        if (needsSessionRefresh) {
+          needsSessionRefresh = false;
+          scheduleSessionsRefresh(activeConfig);
+        }
+
+        if (needsMessageRefresh) {
+          needsMessageRefresh = false;
+          const sid = selectedSessionIdRef.current;
+          if (sid) scheduleMessagesRefresh(activeConfig, sid);
+        }
+      };
+
       streamCleanupRef.current = subscribeToEvents(activeConfig, {
         onOpen: () => setStreamState("online"),
         onEvent: (event) => {
-          setEvents((current) => [event, ...current].slice(0, 10));
+          eventBuffer.push(event);
 
-          const currentSessionId = selectedSessionIdRef.current;
           const eventSessionId = extractEventSessionId(event);
+          const currentSessionId = selectedSessionIdRef.current;
 
           if (
             event.type.startsWith("session") ||
             event.type.startsWith("message") ||
             event.type.startsWith("tool")
           ) {
-            scheduleSessionsRefresh(activeConfig);
+            needsSessionRefresh = true;
           }
 
           if (
@@ -509,10 +569,19 @@ export default function App() {
               event.type.startsWith("message") ||
               event.type.startsWith("tool"))
           ) {
-            scheduleMessagesRefresh(activeConfig, currentSessionId);
+            needsMessageRefresh = true;
+          }
+
+          // Throttle: flush at most once every 2 seconds
+          if (flushTimer === null) {
+            flushTimer = window.setTimeout(flushEvents, 2000);
           }
         },
         onError: (error) => {
+          if (flushTimer !== null) {
+            window.clearTimeout(flushTimer);
+            flushTimer = null;
+          }
           isConnectedRef.current = false;
           setStreamState("error");
           toast.warning(`SSE stream interrupted: ${toErrorMessage(error)}`);

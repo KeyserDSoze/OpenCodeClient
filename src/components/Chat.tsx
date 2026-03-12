@@ -204,7 +204,9 @@ export function Chat({
   };
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    // Use 'auto' (instant) instead of 'smooth' to avoid layout thrashing
+    // when messages update rapidly from SSE events.
+    endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
   }, [messages, showTypingIndicator]);
 
   const title = useMemo(() => session?.title ?? "New conversation", [session]);
