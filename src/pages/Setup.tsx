@@ -6,19 +6,22 @@ interface SetupPageProps {
   knownProfiles: KnownServerProfile[];
   isBusy: boolean;
   error?: string | null;
-  onSubmit: (config: ServerConfigShape) => void;
+  onSubmit: (config: ServerConfigShape, remember: boolean) => void;
   onConnectKnownProfile: (profile: KnownServerProfile) => void;
   onSelectKnownProfile: (profile: KnownServerProfile) => void;
   onOpenDocs: () => void;
   onCancel?: () => void;
 }
 
-function profileOrigin(profile: KnownServerProfile) {
-  if (!profile.sourceKey) {
-    return "profilo salvato";
-  }
-
-  return `rilevato da ${profile.sourceKey}`;
+function timeAgo(ts?: number) {
+  if (!ts) return null;
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 export function SetupPage({
@@ -29,72 +32,51 @@ export function SetupPage({
   ...props
 }: SetupPageProps) {
   return (
-    <main className="setup-shell">
-      <div className="setup-hero">
-        <div className="hero-card">
-          <span className="eyebrow">GitHub Pages Ready</span>
-          <h2>Client web per sessioni, provider e stream live.</h2>
-          <p>
-            Pensato per collegarsi a `opencode serve` da desktop, tablet o telefono con un
-            layout adattivo e uno stato locale persistente.
-          </p>
-          <div className="hero-actions">
-            <button className="button button-secondary" type="button" onClick={onOpenDocs}>
-              Guida server OpenCode
-            </button>
-          </div>
-        </div>
+    <div className="login-shell">
+      <div className="login-bg-gradient" aria-hidden="true" />
 
-        <section className="known-profiles-card">
-          <div className="panel-head">
-            <div>
-              <span className="eyebrow">Local Storage</span>
-              <h2>Server preconfigurati</h2>
+      <div className="login-container">
+        {/* Left panel: recent connections */}
+        {knownProfiles.length > 0 && (
+          <aside className="login-recent">
+            <div className="login-recent-header">
+              <span className="login-recent-title">Recent connections</span>
             </div>
-            <span className="status-chip">{knownProfiles.length}</span>
-          </div>
-
-          {knownProfiles.length === 0 ? (
-            <div className="empty-card">
-              <strong>Nessun server trovato</strong>
-              <span>
-                Appena salvi o usi una connessione OpenCode, comparira qui come scorciatoia.
-              </span>
-            </div>
-          ) : (
-            <div className="known-profile-list">
-              {knownProfiles.map((profile) => (
-                <article key={profile.id} className="known-profile-row">
-                  <div>
-                    <strong>{profile.label}</strong>
-                    <span>{profile.serverUrl}</span>
-                    <span>{profileOrigin(profile)}</span>
+            <div className="login-recent-list">
+              {knownProfiles.slice(0, 8).map((profile) => (
+                <button
+                  key={profile.id}
+                  className="login-profile-row"
+                  type="button"
+                  onClick={() => {
+                    onSelectKnownProfile(profile);
+                    onConnectKnownProfile(profile);
+                  }}
+                >
+                  <div className="login-profile-avatar">
+                    {profile.label.charAt(0).toUpperCase()}
                   </div>
-
-                  <div className="panel-actions">
-                    <button
-                      className="button button-secondary button-small"
-                      type="button"
-                      onClick={() => onSelectKnownProfile(profile)}
-                    >
-                      Usa dati
-                    </button>
-                    <button
-                      className="button button-primary button-small"
-                      type="button"
-                      onClick={() => onConnectKnownProfile(profile)}
-                    >
-                      Connetti
-                    </button>
+                  <div className="login-profile-info">
+                    <span className="login-profile-label">{profile.label}</span>
+                    <span className="login-profile-url">{profile.serverUrl}</span>
                   </div>
-                </article>
+                  {profile.lastUsedAt && (
+                    <span className="login-profile-time">{timeAgo(profile.lastUsedAt)}</span>
+                  )}
+                </button>
               ))}
             </div>
-          )}
-        </section>
-      </div>
+            <button className="login-docs-link" type="button" onClick={onOpenDocs}>
+              Server setup guide
+            </button>
+          </aside>
+        )}
 
-      <ServerConfig {...props} />
-    </main>
+        {/* Right panel: login form */}
+        <main className="login-main">
+          <ServerConfig {...props} />
+        </main>
+      </div>
+    </div>
   );
 }

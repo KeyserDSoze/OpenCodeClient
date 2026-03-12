@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import type { ServerConfig as ServerConfigShape } from "../types/opencode";
+import { loadRememberConnection, saveRememberConnection } from "../storage/config";
 
 interface ServerConfigProps {
   initialValue: ServerConfigShape;
   isBusy: boolean;
   error?: string | null;
-  onSubmit: (config: ServerConfigShape) => void;
+  onSubmit: (config: ServerConfigShape, remember: boolean) => void;
   onCancel?: () => void;
 }
 
@@ -20,6 +21,7 @@ export function ServerConfig({
   const [serverUrl, setServerUrl] = useState(initialValue.serverUrl);
   const [username, setUsername] = useState(initialValue.username);
   const [password, setPassword] = useState(initialValue.password);
+  const [remember, setRemember] = useState(() => loadRememberConnection());
 
   useEffect(() => {
     setServerUrl(initialValue.serverUrl);
@@ -31,79 +33,99 @@ export function ServerConfig({
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-
-    onSubmit({
-      serverUrl: serverUrl.trim(),
-      username: username.trim(),
-      password,
-    });
+    saveRememberConnection(remember);
+    onSubmit(
+      {
+        serverUrl: serverUrl.trim(),
+        username: username.trim(),
+        password,
+      },
+      remember,
+    );
   };
 
   return (
-    <form className="setup-card" onSubmit={handleSubmit}>
-      <div className="setup-copy">
-        <span className="eyebrow">Remote OpenCode</span>
-        <h1>Collega il browser al tuo server agent.</h1>
-        <p>
-          La web app salva le credenziali in locale, verifica la salute del server e apre
-          sessioni e streaming eventi senza backend intermedio.
-        </p>
-      </div>
-
-      <label className="field">
-        <span>Server URL</span>
-        <input
-          type="url"
-          value={serverUrl}
-          onChange={(event) => setServerUrl(event.target.value)}
-          placeholder="https://ai.example.com"
-          autoComplete="url"
-        />
-      </label>
-
-      <label className="field">
-        <span>Username</span>
-        <input
-          type="text"
-          value={username}
-          onChange={(event) => setUsername(event.target.value)}
-          placeholder="opencode"
-          autoComplete="username"
-        />
-      </label>
-
-      <label className="field">
-        <span>Password</span>
-        <input
-          type="password"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          placeholder="Inserisci la password del server"
-          autoComplete="current-password"
-        />
-      </label>
-
-      <div className="setup-tips">
-        <div>
-          <strong>Health check</strong>
-          <span>`GET /global/health`</span>
+    <form className="login-card" onSubmit={handleSubmit}>
+      <div className="login-header">
+        <div className="login-logo">
+          <svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <rect width="32" height="32" rx="8" fill="var(--accent)" opacity="0.15" />
+            <path d="M8 16C8 11.582 11.582 8 16 8s8 3.582 8 8-3.582 8-8 8-8-3.582-8-8z" stroke="var(--accent)" strokeWidth="2" fill="none" />
+            <path d="M13 16l2 2 4-4" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
         </div>
         <div>
-          <strong>Event stream</strong>
-          <span>SSE via `fetch` con Basic Auth</span>
+          <h1 className="login-title">OpenCode</h1>
+          <p className="login-subtitle">Connect to your server</p>
         </div>
       </div>
 
-      {error ? <div className="notice notice-error">{error}</div> : null}
+      <div className="login-fields">
+        <label className="login-field">
+          <span className="login-label">Server URL</span>
+          <input
+            className="login-input"
+            type="url"
+            value={serverUrl}
+            onChange={(event) => setServerUrl(event.target.value)}
+            placeholder="https://ai.example.com"
+            autoComplete="url"
+            autoFocus
+          />
+        </label>
 
-      <div className="form-actions">
-        <button className="button button-primary" type="submit" disabled={!isValid || isBusy}>
-          {isBusy ? "Connessione..." : "Connect"}
+        <label className="login-field">
+          <span className="login-label">Username</span>
+          <input
+            className="login-input"
+            type="text"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            placeholder="opencode"
+            autoComplete="username"
+          />
+        </label>
+
+        <label className="login-field">
+          <span className="login-label">Password</span>
+          <input
+            className="login-input"
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="Server password"
+            autoComplete="current-password"
+          />
+        </label>
+      </div>
+
+      <label className="login-remember">
+        <input
+          type="checkbox"
+          className="login-checkbox"
+          checked={remember}
+          onChange={(event) => setRemember(event.target.checked)}
+        />
+        <span>Remember this connection</span>
+      </label>
+
+      {error ? <div className="login-error">{error}</div> : null}
+
+      <div className="login-actions">
+        <button className="login-btn-primary" type="submit" disabled={!isValid || isBusy}>
+          {isBusy ? (
+            <>
+              <span className="login-spinner" />
+              Connecting...
+            </>
+          ) : (
+            "Connect"
+          )}
         </button>
 
         {onCancel ? (
-          <button className="button button-secondary" type="button" onClick={onCancel}>
-            Torna alla chat
+          <button className="login-btn-secondary" type="button" onClick={onCancel}>
+            Back to chat
           </button>
         ) : null}
       </div>

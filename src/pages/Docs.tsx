@@ -5,127 +5,112 @@ interface DocsPageProps {
 export function DocsPage({ onBack }: DocsPageProps) {
   return (
     <main className="docs-shell">
-      <section className="docs-page">
-        <div className="panel-head docs-page-head">
-          <div>
-            <span className="eyebrow">Documentation</span>
-            <h1>Come creare il server OpenCode e collegarlo al client</h1>
-            <p>
-              Guida rapida per avviare `opencode serve`, proteggere l'accesso con username e
-              password e configurare correttamente il CORS per l'origine web `opencode.zone` o per
-              l'ambiente locale.
-            </p>
-          </div>
+      <button className="docs-back-btn" type="button" onClick={onBack}>
+        ← Back
+      </button>
 
-          <button className="button button-secondary" type="button" onClick={onBack}>
-            Torna indietro
-          </button>
-        </div>
+      <div>
+        <h1 className="docs-title">How to create the OpenCode server and connect the client</h1>
+        <p>
+          Quick guide to start <code>opencode serve</code>, protect access with a username and
+          password, and correctly configure CORS for the <code>opencode.zone</code> origin or
+          your local environment.
+        </p>
+      </div>
 
-        <section className="docs-section">
-          <h2>1. Installazione</h2>
-          <p>Installa OpenCode globalmente sul server o sul PC che terra il backend.</p>
-          <pre className="docs-code"><code>{`npm install -g opencode`}</code></pre>
-        </section>
+      <section className="docs-section">
+        <h2 className="docs-section-title">1. Installation</h2>
+        <p>Install OpenCode globally on the server or PC that will host the backend.</p>
+        <div className="docs-code-block"><pre><code>{`npm install -g opencode`}</code></pre></div>
+      </section>
 
-        <section className="docs-section">
-          <h2>2. Prima distinzione importante</h2>
-          <div className="docs-grid">
-            <article className="docs-note">
-              <strong>App web</strong>
-              <span>`https://opencode.zone` e il frontend pubblicato su GitHub Pages</span>
-            </article>
-            <article className="docs-note">
-              <strong>Server OpenCode</strong>
-              <span>`https://ai.example.com` o `https://api.opencode.zone` e il backend reale</span>
-            </article>
-            <article className="docs-note">
-              <strong>CORS</strong>
-              <span>Il server deve consentire l'origine `https://opencode.zone`</span>
-            </article>
-          </div>
-        </section>
+      <section className="docs-section">
+        <h2 className="docs-section-title">2. Key concepts</h2>
+        <article className="docs-note">
+          <strong>Web app</strong> — <code>https://opencode.zone</code> is the frontend published on GitHub Pages.
+        </article>
+        <article className="docs-note">
+          <strong>OpenCode server</strong> — <code>https://ai.example.com</code> or <code>https://api.opencode.zone</code> is the real backend.
+        </article>
+        <article className="docs-note">
+          <strong>CORS</strong> — The server must allow the origin <code>https://opencode.zone</code>.
+        </article>
+      </section>
 
-        <section className="docs-section">
-          <h2>3. Avvio con username, password e CORS</h2>
-          <p>
-            Il client si connette via HTTP Basic Auth. Di default lo username e `opencode`, ma
-            puoi impostarne uno personalizzato con `OPENCODE_SERVER_USERNAME`.
-          </p>
-          <pre className="docs-code"><code>{`OPENCODE_SERVER_USERNAME=opencode \
-OPENCODE_SERVER_PASSWORD=una-password-forte \
-opencode serve \
-  --hostname 0.0.0.0 \
-  --port 4096 \
-  --cors https://opencode.zone \
-  --cors http://localhost:5173`}</code></pre>
-          <p>
-            In produzione tieni `https://opencode.zone` tra gli origin consentiti. Durante lo
-            sviluppo tieni anche `http://localhost:5173` se usi Vite in locale.
-          </p>
-        </section>
+      <section className="docs-section">
+        <h2 className="docs-section-title">3. Start with username, password and CORS</h2>
+        <p>
+          The client connects via HTTP Basic Auth. The default username is <code>opencode</code>, but
+          you can set a custom one with <code>OPENCODE_SERVER_USERNAME</code>.
+        </p>
+        <div className="docs-code-block"><pre><code>{`OPENCODE_SERVER_USERNAME=opencode \\
+OPENCODE_SERVER_PASSWORD=a-strong-password \\
+opencode serve \\
+  --hostname 0.0.0.0 \\
+  --port 4096 \\
+  --cors https://opencode.zone \\
+  --cors http://localhost:5173`}</code></pre></div>
+        <p>
+          In production keep <code>https://opencode.zone</code> among the allowed origins. During
+          development also keep <code>http://localhost:5173</code> if you use Vite locally.
+        </p>
+      </section>
 
-        <section className="docs-section">
-          <h2>4. Esempio Windows PowerShell</h2>
-          <pre className="docs-code"><code>{`$env:OPENCODE_SERVER_USERNAME = "opencode"
-$env:OPENCODE_SERVER_PASSWORD = "una-password-forte"
-opencode serve --hostname 0.0.0.0 --port 4096 --cors https://opencode.zone --cors http://localhost:5173`}</code></pre>
-        </section>
+      <section className="docs-section">
+        <h2 className="docs-section-title">4. Windows PowerShell example</h2>
+        <div className="docs-code-block"><pre><code>{`$env:OPENCODE_SERVER_USERNAME = "opencode"
+$env:OPENCODE_SERVER_PASSWORD = "a-strong-password"
+opencode serve --hostname 0.0.0.0 --port 4096 --cors https://opencode.zone --cors http://localhost:5173`}</code></pre></div>
+      </section>
 
-        <section className="docs-section">
-          <h2>5. Come compili i campi nel client</h2>
-          <div className="docs-grid">
-            <article className="docs-note">
-              <strong>Server URL</strong>
-              <span>`https://ai.example.com`, `https://api.opencode.zone` oppure `http://IP:4096`</span>
-            </article>
-            <article className="docs-note">
-              <strong>Username</strong>
-              <span>Lo stesso valore di `OPENCODE_SERVER_USERNAME` o `opencode`</span>
-            </article>
-            <article className="docs-note">
-              <strong>Password</strong>
-              <span>Lo stesso valore di `OPENCODE_SERVER_PASSWORD`</span>
-            </article>
-          </div>
-        </section>
+      <section className="docs-section">
+        <h2 className="docs-section-title">5. How to fill in the connection form</h2>
+        <article className="docs-note">
+          <strong>Server URL</strong> — <code>https://ai.example.com</code>, <code>https://api.opencode.zone</code> or <code>http://IP:4096</code>
+        </article>
+        <article className="docs-note">
+          <strong>Username</strong> — Same value as <code>OPENCODE_SERVER_USERNAME</code> or <code>opencode</code>
+        </article>
+        <article className="docs-note">
+          <strong>Password</strong> — Same value as <code>OPENCODE_SERVER_PASSWORD</code>
+        </article>
+      </section>
 
-        <section className="docs-section">
-          <h2>6. Verifiche utili</h2>
-          <p>Controlla che il server risponda prima di aprire il client.</p>
-          <pre className="docs-code"><code>{`GET /global/health
+      <section className="docs-section">
+        <h2 className="docs-section-title">6. Useful checks</h2>
+        <p>Verify the server is responding before opening the client.</p>
+        <div className="docs-code-block"><pre><code>{`GET /global/health
 GET /doc
-GET /event`}</code></pre>
-          <p>
-            In pratica puoi aprire `https://ai.example.com/doc` per vedere la spec OpenAPI e usare
-            `https://ai.example.com/global/health` per controllare se il server e healthy.
-          </p>
-        </section>
+GET /event`}</code></pre></div>
+        <p>
+          Open <code>/doc</code> to see the OpenAPI spec and <code>/global/health</code> to check
+          if the server is healthy.
+        </p>
+      </section>
 
-        <section className="docs-section">
-          <h2>7. Note CORS importanti</h2>
-          <ul className="docs-list">
-            <li>Il browser blocca le chiamate se il dominio del client non e tra i `--cors`.</li>
-            <li>Aggiungi sempre tutti gli origin reali da cui userai il client.</li>
-            <li>
-              Per questa app: `https://opencode.zone` in produzione e `http://localhost:5173` in
-              sviluppo.
-            </li>
-            <li>
-              Se usi un sottodominio separato per il backend, per esempio `https://api.opencode.zone`,
-              il `Server URL` nel form deve essere quello, non `https://opencode.zone`.
-            </li>
-          </ul>
-        </section>
+      <section className="docs-section">
+        <h2 className="docs-section-title">7. Important CORS notes</h2>
+        <article className="docs-note">
+          The browser blocks requests if the client domain is not listed in <code>--cors</code>.
+          Always add every real origin from which you will use the client.
+        </article>
+        <article className="docs-note">
+          For this app: <code>https://opencode.zone</code> in production and{" "}
+          <code>http://localhost:5173</code> in development.
+        </article>
+        <article className="docs-note">
+          If you use a separate subdomain for the backend (e.g. <code>https://api.opencode.zone</code>),
+          the <strong>Server URL</strong> in the form must be that, not <code>https://opencode.zone</code>.
+        </article>
+      </section>
 
-        <section className="docs-section">
-          <h2>8. Accesso pubblico</h2>
-          <p>
-            Se il server gira in casa o su una rete privata, devi esporlo in modo sicuro: reverse
-            proxy HTTPS, tunnel o rete privata tipo Tailscale. Evita di pubblicare il server senza
-            password forte e TLS.
-          </p>
-        </section>
+      <section className="docs-section">
+        <h2 className="docs-section-title">8. Public access</h2>
+        <p>
+          If the server runs at home or on a private network, you must expose it securely: HTTPS
+          reverse proxy, tunnel, or a private network like Tailscale. Avoid publishing the server
+          without a strong password and TLS.
+        </p>
       </section>
     </main>
   );

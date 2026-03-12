@@ -18,9 +18,8 @@ interface ApiToolsProps {
 
 function renderMessageResult(message: SessionMessage | null) {
   if (!message) {
-    return "Request completata senza body JSON.";
+    return "Request completed without JSON body.";
   }
-
   return extractMessageText(message);
 }
 
@@ -50,13 +49,9 @@ export function ApiTools({ agents, config, sessionId }: ApiToolsProps) {
   }, [agentOptions, shellAgent]);
 
   const runSearch = async () => {
-    if (!pattern.trim()) {
-      return;
-    }
-
+    if (!pattern.trim()) return;
     setBusyKey("find");
     setError(null);
-
     try {
       const nextResults = await searchInFiles(config, pattern.trim());
       setSearchResults(nextResults);
@@ -68,13 +63,9 @@ export function ApiTools({ agents, config, sessionId }: ApiToolsProps) {
   };
 
   const runFileFind = async () => {
-    if (!fileQuery.trim()) {
-      return;
-    }
-
+    if (!fileQuery.trim()) return;
     setBusyKey("files");
     setError(null);
-
     try {
       const nextResults = await findFiles(config, fileQuery.trim());
       setFileResults(nextResults);
@@ -86,16 +77,12 @@ export function ApiTools({ agents, config, sessionId }: ApiToolsProps) {
   };
 
   const runReadFile = async () => {
-    if (!readPath.trim()) {
-      return;
-    }
-
+    if (!readPath.trim()) return;
     setBusyKey("read");
     setError(null);
-
     try {
       const nextContent = await readFileContent(config, readPath.trim());
-      setFileContent(nextContent || "File letto ma senza contenuto testuale.");
+      setFileContent(nextContent || "File read but no textual content.");
     } catch (requestError) {
       setError(toErrorMessage(requestError));
     } finally {
@@ -104,13 +91,9 @@ export function ApiTools({ agents, config, sessionId }: ApiToolsProps) {
   };
 
   const runSlashCommand = async () => {
-    if (!sessionId || !slashCommand.trim()) {
-      return;
-    }
-
+    if (!sessionId || !slashCommand.trim()) return;
     setBusyKey("command");
     setError(null);
-
     try {
       const nextResult = await executeSessionCommand(config, sessionId, {
         command: slashCommand.trim(),
@@ -128,13 +111,9 @@ export function ApiTools({ agents, config, sessionId }: ApiToolsProps) {
   };
 
   const runShell = async () => {
-    if (!sessionId || !shellCommand.trim()) {
-      return;
-    }
-
+    if (!sessionId || !shellCommand.trim()) return;
     setBusyKey("shell");
     setError(null);
-
     try {
       const nextResult = await runShellCommand(config, sessionId, {
         command: shellCommand.trim(),
@@ -150,216 +129,204 @@ export function ApiTools({ agents, config, sessionId }: ApiToolsProps) {
 
   return (
     <section className="api-tools">
-      <div className="panel-head panel-head-tools">
-        <div>
-          <span className="eyebrow">API Tools</span>
-          <h3>Find, file content, slash command e shell</h3>
-          <p>
-            Utility rapide per provare gli endpoint della spec senza uscire dalla web app.
-          </p>
-        </div>
-        <span className="status-chip">Session: {sessionId ?? "none"}</span>
+      <div className="api-tools-header">
+        <span className="api-tools-title">API Tools</span>
+        <span style={{ fontSize: "11px", fontFamily: "var(--font-mono)", color: "var(--text-3)" }}>
+          session: {sessionId ?? "none"}
+        </span>
       </div>
 
-      {error ? <div className="notice notice-error">{error}</div> : null}
+      {error ? (
+        <div className="login-error" style={{ marginBottom: 8 }}>{error}</div>
+      ) : null}
 
-      <div className="tools-grid">
-        <article className="tool-card">
-          <div className="tool-head">
-            <strong>Find</strong>
-            <span>`GET /find` + `GET /find/file`</span>
+      <div className="api-tools-grid">
+        {/* Find */}
+        <div className="tool-card">
+          <div className="tool-card-title">Find</div>
+          <div className="tool-card-subtitle">GET /find · GET /find/file</div>
+
+          <div className="tool-input-row">
+            <input
+              className="tool-input"
+              type="text"
+              value={pattern}
+              onChange={(event) => setPattern(event.target.value)}
+              placeholder="TODO"
+            />
+            <button className="tool-run-btn" type="button" onClick={runSearch}>
+              {busyKey === "find" ? "..." : "Text"}
+            </button>
           </div>
 
-          <div className="tool-stack">
-            <label className="field">
-              <span>Pattern testo</span>
-              <input
-                type="text"
-                value={pattern}
-                onChange={(event) => setPattern(event.target.value)}
-                placeholder="TODO"
-              />
-            </label>
-
-            <button className="button button-secondary" type="button" onClick={runSearch}>
-              {busyKey === "find" ? "Searching..." : "Search text"}
-            </button>
-
-            <label className="field">
-              <span>Query file</span>
-              <input
-                type="text"
-                value={fileQuery}
-                onChange={(event) => setFileQuery(event.target.value)}
-                placeholder="app"
-              />
-            </label>
-
-            <button className="button button-secondary" type="button" onClick={runFileFind}>
-              {busyKey === "files" ? "Finding..." : "Find files"}
+          <div className="tool-input-row">
+            <input
+              className="tool-input"
+              type="text"
+              value={fileQuery}
+              onChange={(event) => setFileQuery(event.target.value)}
+              placeholder="filename"
+            />
+            <button className="tool-run-btn" type="button" onClick={runFileFind}>
+              {busyKey === "files" ? "..." : "Files"}
             </button>
           </div>
 
           <div className="tool-output">
             {searchResults.length > 0 ? (
-              <div className="tool-result-group">
-                <strong>Text matches</strong>
-                {searchResults.slice(0, 8).map((result) => (
+              <div className="tool-result-list">
+                {searchResults.slice(0, 6).map((result) => (
                   <button
-                    key={`${result.path}-${result.lineNumber ?? 0}-${result.lines ?? ""}`}
-                    className="tool-result-button"
+                    key={`${result.path}-${result.lineNumber ?? 0}`}
+                    className="tool-result-item"
                     type="button"
                     onClick={() => setReadPath(result.path)}
                   >
                     <span>{result.path}{result.lineNumber ? `:${result.lineNumber}` : ""}</span>
-                    <small>{result.lines ?? "Apri il file nel pannello file content"}</small>
+                    {result.lines && <span style={{ color: "var(--text-3)" }}>{result.lines}</span>}
                   </button>
                 ))}
               </div>
-            ) : null}
-
-            {fileResults.length > 0 ? (
-              <div className="tool-result-group">
-                <strong>File matches</strong>
-                {fileResults.slice(0, 8).map((result) => (
+            ) : fileResults.length > 0 ? (
+              <div className="tool-result-list">
+                {fileResults.slice(0, 6).map((result) => (
                   <button
                     key={result}
-                    className="tool-result-button"
+                    className="tool-result-item"
                     type="button"
                     onClick={() => setReadPath(result)}
                   >
-                    <span>{result}</span>
-                    <small>Usa questo path in file content</small>
+                    {result}
                   </button>
                 ))}
               </div>
-            ) : null}
-
-            {searchResults.length === 0 && fileResults.length === 0 ? (
-              <div className="empty-inline">Nessun risultato ancora.</div>
-            ) : null}
-          </div>
-        </article>
-
-        <article className="tool-card">
-          <div className="tool-head">
-            <strong>File content</strong>
-            <span>`GET /file/content`</span>
-          </div>
-
-          <div className="tool-stack">
-            <label className="field">
-              <span>Path</span>
-              <input
-                type="text"
-                value={readPath}
-                onChange={(event) => setReadPath(event.target.value)}
-                placeholder="src/app.ts"
-              />
-            </label>
-
-            <button className="button button-secondary" type="button" onClick={runReadFile}>
-              {busyKey === "read" ? "Reading..." : "Read file"}
-            </button>
-          </div>
-
-          <div className="tool-output tool-output-pre">
-            {fileContent ? <pre>{fileContent}</pre> : <div className="empty-inline">Il contenuto letto apparira qui.</div>}
-          </div>
-        </article>
-
-        <article className="tool-card">
-          <div className="tool-head">
-            <strong>Slash command</strong>
-            <span>`POST /session/{'{id}'}/command`</span>
-          </div>
-
-          <div className="tool-stack">
-            <label className="field">
-              <span>Command</span>
-              <input
-                type="text"
-                value={slashCommand}
-                onChange={(event) => setSlashCommand(event.target.value)}
-                placeholder="/test"
-              />
-            </label>
-
-            <label className="field">
-              <span>Arguments (comma separated)</span>
-              <input
-                type="text"
-                value={slashArguments}
-                onChange={(event) => setSlashArguments(event.target.value)}
-                placeholder="arg1, arg2"
-              />
-            </label>
-
-            <button
-              className="button button-secondary"
-              type="button"
-              onClick={runSlashCommand}
-              disabled={!canUseSessionTools}
-            >
-              {busyKey === "command" ? "Running..." : "Run command"}
-            </button>
-          </div>
-
-          <div className="tool-output tool-output-pre">
-            {canUseSessionTools ? (
-              commandOutput ? <pre>{commandOutput}</pre> : <div className="empty-inline">L'output del comando apparira qui.</div>
             ) : (
-              <div className="empty-inline">Apri una sessione per usare gli endpoint legati a `/session`.</div>
+              <pre style={{ color: "var(--text-3)", fontSize: "12px" }}>No results yet.</pre>
             )}
           </div>
-        </article>
+        </div>
 
-        <article className="tool-card">
-          <div className="tool-head">
-            <strong>Shell</strong>
-            <span>`POST /session/{'{id}'}/shell`</span>
-          </div>
+        {/* File content */}
+        <div className="tool-card">
+          <div className="tool-card-title">File content</div>
+          <div className="tool-card-subtitle">GET /file/content</div>
 
-          <div className="tool-stack">
-            <label className="field">
-              <span>Command</span>
-              <input
-                type="text"
-                value={shellCommand}
-                onChange={(event) => setShellCommand(event.target.value)}
-                placeholder="ls -la"
-              />
-            </label>
-
-            <label className="field">
-              <span>Agent</span>
-              <input
-                list="api-tools-agent-list"
-                type="text"
-                value={shellAgent}
-                onChange={(event) => setShellAgent(event.target.value)}
-                placeholder={agentOptions[0] ?? "coder"}
-              />
-            </label>
-
-            <button
-              className="button button-secondary"
-              type="button"
-              onClick={runShell}
-              disabled={!canUseSessionTools}
-            >
-              {busyKey === "shell" ? "Executing..." : "Run shell"}
+          <div className="tool-input-row">
+            <input
+              className="tool-input"
+              type="text"
+              value={readPath}
+              onChange={(event) => setReadPath(event.target.value)}
+              placeholder="src/app.ts"
+            />
+            <button className="tool-run-btn" type="button" onClick={runReadFile}>
+              {busyKey === "read" ? "..." : "Read"}
             </button>
           </div>
 
-          <div className="tool-output tool-output-pre">
-            {canUseSessionTools ? (
-              shellOutput ? <pre>{shellOutput}</pre> : <div className="empty-inline">L'output shell apparira qui.</div>
+          <div className="tool-output">
+            {fileContent ? (
+              <pre>{fileContent}</pre>
             ) : (
-              <div className="empty-inline">Apri una sessione per eseguire comandi shell.</div>
+              <pre style={{ color: "var(--text-3)", fontSize: "12px" }}>File content here.</pre>
             )}
           </div>
-        </article>
+        </div>
+
+        {/* Slash command */}
+        <div className="tool-card">
+          <div className="tool-card-title">Slash command</div>
+          <div className="tool-card-subtitle">POST /session/&#123;id&#125;/command</div>
+
+          <div className="tool-input-row">
+            <input
+              className="tool-input"
+              type="text"
+              value={slashCommand}
+              onChange={(event) => setSlashCommand(event.target.value)}
+              placeholder="/test"
+              style={{ flex: 2 }}
+            />
+            <input
+              className="tool-input"
+              type="text"
+              value={slashArguments}
+              onChange={(event) => setSlashArguments(event.target.value)}
+              placeholder="arg1, arg2"
+              style={{ flex: 1 }}
+            />
+          </div>
+
+          <button
+            className="tool-run-btn"
+            type="button"
+            onClick={runSlashCommand}
+            disabled={!canUseSessionTools}
+            style={{ width: "100%" }}
+          >
+            {busyKey === "command" ? "Running..." : "Run command"}
+          </button>
+
+          <div className="tool-output">
+            {canUseSessionTools ? (
+              commandOutput ? (
+                <pre>{commandOutput}</pre>
+              ) : (
+                <pre style={{ color: "var(--text-3)", fontSize: "12px" }}>Output here.</pre>
+              )
+            ) : (
+              <pre style={{ color: "var(--text-3)", fontSize: "12px" }}>Open a session first.</pre>
+            )}
+          </div>
+        </div>
+
+        {/* Shell */}
+        <div className="tool-card">
+          <div className="tool-card-title">Shell</div>
+          <div className="tool-card-subtitle">POST /session/&#123;id&#125;/shell</div>
+
+          <div className="tool-input-row">
+            <input
+              className="tool-input"
+              type="text"
+              value={shellCommand}
+              onChange={(event) => setShellCommand(event.target.value)}
+              placeholder="ls -la"
+              style={{ flex: 2 }}
+            />
+            <input
+              className="tool-input"
+              list="api-tools-agent-list"
+              type="text"
+              value={shellAgent}
+              onChange={(event) => setShellAgent(event.target.value)}
+              placeholder={agentOptions[0] ?? "coder"}
+              style={{ flex: 1 }}
+            />
+          </div>
+
+          <button
+            className="tool-run-btn"
+            type="button"
+            onClick={runShell}
+            disabled={!canUseSessionTools}
+            style={{ width: "100%" }}
+          >
+            {busyKey === "shell" ? "Executing..." : "Run shell"}
+          </button>
+
+          <div className="tool-output">
+            {canUseSessionTools ? (
+              shellOutput ? (
+                <pre>{shellOutput}</pre>
+              ) : (
+                <pre style={{ color: "var(--text-3)", fontSize: "12px" }}>Output here.</pre>
+              )
+            ) : (
+              <pre style={{ color: "var(--text-3)", fontSize: "12px" }}>Open a session first.</pre>
+            )}
+          </div>
+        </div>
       </div>
 
       <datalist id="api-tools-agent-list">

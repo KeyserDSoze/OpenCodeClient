@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent } from "react";
+import type { FormEvent, KeyboardEvent, SyntheticEvent } from "react";
 import type {
   AgentSummary,
   ComposerSelectOption,
@@ -55,18 +55,28 @@ export function Chat({
   onSend,
 }: ChatProps) {
   const [draft, setDraft] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showApiTools, setShowApiTools] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
   const disabled = isSending || draft.trim().length === 0;
   const hasSelectedAgentOption = !selectedAgent || agents.some((agent) => agent.id === selectedAgent);
   const hasSelectedModelOption =
     !selectedModel || modelOptions.some((option) => option.value === selectedModel);
+
+  const activeControlsCount = [
+    selectedAgent ? 1 : 0,
+    selectedModel ? 1 : 0,
+    selectedTools.length > 0 ? 1 : 0,
+    deliveryMode === "async" ? 1 : 0,
+  ].reduce((a, b) => a + b, 0);
 
   const toggleTool = (toolId: string) => {
     if (selectedTools.includes(toolId)) {
       onSelectedToolsChange(selectedTools.filter((value) => value !== toolId));
       return;
     }
-
     onSelectedToolsChange([...selectedTools, toolId]);
   };
 
@@ -74,15 +84,16 @@ export function Chat({
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
 
-  const title = useMemo(() => session?.title ?? "Seleziona una sessione", [session]);
+  const title = useMemo(() => session?.title ?? "New conversation", [session]);
 
   const submitDraft = async () => {
-    if (!draft.trim()) {
-      return;
-    }
-
+    if (!draft.trim()) return;
     const nextValue = draft.trim();
     setDraft("");
+    // Auto-resize reset
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+    }
     await onSend(nextValue);
   };
 
@@ -98,165 +109,232 @@ export function Chat({
     }
   };
 
+  const handleTextareaInput = (event: SyntheticEvent<HTMLTextAreaElement>) => {
+    const el = event.currentTarget;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
+  };
+
   return (
-    <section className="panel panel-chat">
-      <div className="panel-head panel-head-chat">
-        <div>
-          <span className="eyebrow">Conversation</span>
-          <h2>{title}</h2>
-          <p>{session ? `Status: ${session.status}` : "Apri o crea una sessione per iniziare."}</p>
-        </div>
-
-        <div className="panel-actions">
-          {session && onAbort ? (
-            <button className="button button-secondary" type="button" onClick={onAbort}>
-              Abort
-            </button>
-          ) : null}
-          <button className="icon-button" type="button" onClick={onReload} title="Ricarica messaggi">
-            ↻
-          </button>
-        </div>
-      </div>
-
-      <div className="chat-scroll">
-        {messages.length === 0 ? (
-          <div className="chat-empty">
-            <strong>Pronto per il primo prompt</strong>
-            <span>
-              La risposta del server apparira qui e verra aggiornata quando arrivano eventi SSE.
-            </span>
+    <div className="chat-panel">
+      {/* Messages area */}
+      <div className="chat-messages">
+        {messages.length === 0 && !isLoading ? (
+          <div className="chat-empty-state">
+            <div className="chat-empty-icon">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+            </div>
+            <p className="chat-empty-title">{title}</p>
+            <p className="chat-empty-hint">
+              {session
+                ? "No messages yet. Start the conversation below."
+                : "Select or create a session from the sidebar."}
+            </p>
           </div>
         ) : (
-          messages.map((message) => <Message key={message.info.id} message={message} />)
+          <div className="messages-list">
+            {messages.map((message) => (
+              <Message key={message.info.id} message={message} />
+            ))}
+          </div>
         )}
 
-        {isLoading ? <div className="inline-status">Caricamento messaggi...</div> : null}
+        {isLoading && (
+          <div className="chat-loading">
+            <span className="loading-dots">
+              <span /><span /><span />
+            </span>
+          </div>
+        )}
         <div ref={endRef} />
       </div>
 
-      <form className="composer" onSubmit={handleSubmit}>
-        <div className="composer-toolbar">
-          <div className="mode-toggle">
-            <span>Delivery</span>
-            <div className="mode-toggle-buttons">
-              <button
-                className={`mode-toggle-button ${deliveryMode === "reply" ? "mode-toggle-button-active" : ""}`}
-                type="button"
-                onClick={() => onDeliveryModeChange("reply")}
-              >
-                Sync reply
-              </button>
-              <button
-                className={`mode-toggle-button ${deliveryMode === "async" ? "mode-toggle-button-active" : ""}`}
-                type="button"
-                onClick={() => onDeliveryModeChange("async")}
-              >
-                Async SSE
-              </button>
+      {/* Composer */}
+      <div className="composer-area">
+        {/* Advanced controls panel */}
+        {showAdvanced && (
+          <div className="composer-advanced">
+            <div className="composer-advanced-row">
+              <label className="composer-field">
+                <span className="composer-field-label">Agent</span>
+                <select
+                  className="composer-select"
+                  value={selectedAgent}
+                  onChange={(event) => onSelectedAgentChange(event.target.value)}
+                >
+                  <option value="">Default</option>
+                  {!hasSelectedAgentOption && (
+                    <option value={selectedAgent}>{selectedAgent} (saved)</option>
+                  )}
+                  {agents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="composer-field">
+                <span className="composer-field-label">Model</span>
+                <select
+                  className="composer-select"
+                  value={selectedModel}
+                  onChange={(event) => onSelectedModelChange(event.target.value)}
+                >
+                  <option value="">Default</option>
+                  {!hasSelectedModelOption && (
+                    <option value={selectedModel}>{selectedModel} (saved)</option>
+                  )}
+                  {modelOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="composer-field">
+                <span className="composer-field-label">Mode</span>
+                <select
+                  className="composer-select"
+                  value={deliveryMode}
+                  onChange={(event) => onDeliveryModeChange(event.target.value as PromptMode)}
+                >
+                  <option value="reply">Sync reply</option>
+                  <option value="async">Async SSE</option>
+                </select>
+              </label>
             </div>
+
+            {toolOptions.length > 0 && (
+              <div className="composer-tools-row">
+                <span className="composer-field-label">Tools</span>
+                <div className="tools-chips">
+                  {toolOptions.map((option) => {
+                    const isActive = selectedTools.includes(option.value);
+                    return (
+                      <button
+                        key={option.value}
+                        className={`tool-chip ${isActive ? "tool-chip-active" : ""}`}
+                        type="button"
+                        onClick={() => toggleTool(option.value)}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                  {selectedTools.length > 0 && (
+                    <button
+                      className="tool-chip-clear"
+                      type="button"
+                      onClick={() => onSelectedToolsChange([])}
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
-          <span className="status-chip">
-            {deliveryMode === "async" ? "POST /prompt_async" : "POST /message"}
-          </span>
-        </div>
+        )}
 
-        <div className="composer-selectors">
-          <label className="field field-compact">
-            <span>Agent</span>
-            <select
-              value={selectedAgent}
-              onChange={(event) => onSelectedAgentChange(event.target.value)}
-            >
-              <option value="">Server default</option>
-              {!hasSelectedAgentOption ? (
-                <option value={selectedAgent}>{selectedAgent} (saved)</option>
-              ) : null}
-              {agents.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.id}
-                </option>
-              ))}
-            </select>
-          </label>
+        <form className="composer-form" onSubmit={handleSubmit}>
+          <textarea
+            ref={textareaRef}
+            className="composer-textarea"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={handleKeyDown}
+            onInput={handleTextareaInput}
+            placeholder="Message OpenCode..."
+            rows={1}
+          />
 
-          <label className="field field-compact">
-            <span>Model</span>
-            <select
-              value={selectedModel}
-              onChange={(event) => onSelectedModelChange(event.target.value)}
-            >
-              <option value="">Server default</option>
-              {!hasSelectedModelOption ? (
-                <option value={selectedModel}>{selectedModel} (saved)</option>
-              ) : null}
-              {modelOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
+          <div className="composer-footer">
+            <div className="composer-footer-left">
+              <button
+                className={`composer-btn-icon ${showAdvanced ? "active" : ""}`}
+                type="button"
+                onClick={() => setShowAdvanced((v) => !v)}
+                title="Advanced options"
+                aria-label="Toggle advanced options"
+                aria-expanded={showAdvanced}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="4" y1="21" x2="4" y2="14" />
+                  <line x1="4" y1="10" x2="4" y2="3" />
+                  <line x1="12" y1="21" x2="12" y2="12" />
+                  <line x1="12" y1="8" x2="12" y2="3" />
+                  <line x1="20" y1="21" x2="20" y2="16" />
+                  <line x1="20" y1="12" x2="20" y2="3" />
+                  <line x1="1" y1="14" x2="7" y2="14" />
+                  <line x1="9" y1="8" x2="15" y2="8" />
+                  <line x1="17" y1="16" x2="23" y2="16" />
+                </svg>
+                {activeControlsCount > 0 && (
+                  <span className="composer-badge">{activeControlsCount}</span>
+                )}
+              </button>
 
-        <div className="tools-selector">
-          <div className="tools-selector-head">
-            <span>Tools</span>
+              <button
+                className={`composer-btn-icon ${showApiTools ? "active" : ""}`}
+                type="button"
+                onClick={() => setShowApiTools((v) => !v)}
+                title="API tools"
+                aria-label="Toggle API tools"
+                aria-expanded={showApiTools}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="16 18 22 12 16 6" />
+                  <polyline points="8 6 2 12 8 18" />
+                </svg>
+              </button>
+
+              {session && onAbort && isSending && (
+                <button
+                  className="composer-btn-abort"
+                  type="button"
+                  onClick={onAbort}
+                  title="Stop generation"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                    <rect x="6" y="6" width="12" height="12" rx="1" />
+                  </svg>
+                  Stop
+                </button>
+              )}
+
+              <span className="composer-hint">⌘↵ to send</span>
+            </div>
+
             <button
-              className="button button-secondary button-small"
-              type="button"
-              onClick={() => onSelectedToolsChange([])}
-              disabled={selectedTools.length === 0}
+              className="composer-send"
+              type="submit"
+              disabled={disabled}
+              aria-label="Send message"
             >
-              Use server default
+              {isSending ? (
+                <span className="composer-sending-dots">
+                  <span /><span /><span />
+                </span>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13" />
+                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                </svg>
+              )}
             </button>
           </div>
+        </form>
 
-          <div className="tool-chip-grid">
-            {toolOptions.map((option) => {
-              const isActive = selectedTools.includes(option.value);
-
-              return (
-                <button
-                  key={option.value}
-                  className={`tool-chip ${isActive ? "tool-chip-active" : ""}`}
-                  type="button"
-                  onClick={() => toggleTool(option.value)}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
+        {showApiTools && (
+          <div className="api-tools-panel">
+            <ApiTools agents={agents} config={config} sessionId={session?.id ?? null} />
           </div>
-
-          <span className="tools-selector-copy">
-            {selectedTools.length > 0
-              ? `${selectedTools.length} tool selezionati per questo prompt.`
-              : "Nessun override: il server decide l'insieme tool disponibile."}
-          </span>
-        </div>
-
-        <textarea
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Scrivi un prompt per OpenCode..."
-          rows={4}
-        />
-
-        <div className="composer-actions">
-          <span>
-            {deliveryMode === "async"
-              ? "Il prompt viene accodato e la risposta arriva via SSE."
-              : "Invio rapido: Ctrl/Cmd + Enter"}
-          </span>
-          <button className="button button-primary" type="submit" disabled={disabled}>
-            {isSending ? (deliveryMode === "async" ? "Queueing..." : "Sending...") : deliveryMode === "async" ? "Queue async" : "Send"}
-          </button>
-        </div>
-      </form>
-
-      <ApiTools agents={agents} config={config} sessionId={session?.id ?? null} />
-    </section>
+        )}
+      </div>
+    </div>
   );
 }

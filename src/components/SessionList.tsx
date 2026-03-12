@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type {
   AgentSummary,
   PathInfo,
@@ -27,55 +28,20 @@ interface SessionListProps {
   onProviderLogin: (providerId: string) => void;
 }
 
-function formatDate(value?: string) {
-  if (!value) {
-    return "adesso";
-  }
-
+function formatRelative(value?: string) {
+  if (!value) return "";
   const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat("it-IT", {
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
-}
-
-function providerSubtitle(provider: ProviderSummary) {
-  if (provider.defaultModel) {
-    return `default ${provider.defaultModel}`;
-  }
-
-  if (provider.models.length === 0) {
-    return provider.authType ? provider.authType.toUpperCase() : "modelli non esposti";
-  }
-
-  return provider.models.slice(0, 2).join(" • ");
-}
-
-function projectPath(currentProject: ProjectSummary | null, pathInfo: PathInfo | null) {
-  return pathInfo?.root ?? currentProject?.path ?? "path non disponibile";
-}
-
-function vcsLabel(vcsInfo: VcsInfo | null) {
-  if (!vcsInfo) {
-    return "VCS non disponibile";
-  }
-
-  if (vcsInfo.dirty === undefined) {
-    return vcsInfo.branch ?? "stato VCS non disponibile";
-  }
-
-  return vcsInfo.dirty ? "working tree dirty" : "working tree clean";
+  if (Number.isNaN(date.getTime())) return "";
+  const diff = Date.now() - date.getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 export function SessionList({
-  projects,
   currentProject,
   pathInfo,
   vcsInfo,
@@ -87,173 +53,221 @@ export function SessionList({
   streamState,
   isLoading,
   onCreate,
-  onRefresh,
   onSelect,
   onDelete,
   onProviderLogin,
 }: SessionListProps) {
+  const [showAgents, setShowAgents] = useState(false);
+  const [showProviders, setShowProviders] = useState(false);
+  const [showEvents, setShowEvents] = useState(false);
+
   return (
-    <aside className="panel panel-sidebar">
-      <div className="panel-head">
-        <div>
-          <span className="eyebrow">Workspace</span>
-          <h2>Sessioni</h2>
-        </div>
-
-        <div className="panel-actions">
-          <button className="icon-button" type="button" onClick={onRefresh} title="Ricarica">
-            ↻
-          </button>
-          <button className="button button-primary" type="button" onClick={onCreate}>
-            New session
-          </button>
-        </div>
-      </div>
-
-      <div className="stream-banner">
-        <span className={`status-dot status-dot-${streamState}`} />
-        <strong>Stream</strong>
-        <span>{streamState}</span>
-      </div>
-
-      <section className="sidebar-section">
-        <div className="sidebar-section-head">
-          <h3>Workspace</h3>
-          <span>{projects.length || (currentProject ? 1 : 0)}</span>
-        </div>
-
-        <div className="meta-grid">
-          <article className="meta-card">
-            <strong>{currentProject?.name ?? "Nessun progetto"}</strong>
-            <span>{projectPath(currentProject, pathInfo)}</span>
-          </article>
-
-          <article className="meta-card">
-            <strong>{vcsInfo?.branch ?? "Repo non rilevata"}</strong>
-            <span>{vcsLabel(vcsInfo)}</span>
-          </article>
-        </div>
-      </section>
-
-      <section className="sidebar-section">
-        <div className="sidebar-section-head">
-          <h3>Agents</h3>
-          <span>{agents.length}</span>
-        </div>
-
-        <div className="agent-list">
-          {agents.length === 0 ? (
-            <div className="empty-inline">Nessun agent pubblicato dal server.</div>
-          ) : (
-            agents.slice(0, 6).map((agent) => (
-              <article key={agent.id} className="agent-card">
-                <strong>{agent.id}</strong>
-                <span>{agent.description ?? "Agent disponibile via API"}</span>
-              </article>
-            ))
+    <aside className="sidebar">
+      {/* Workspace info */}
+      <div className="sidebar-workspace">
+        <div className="workspace-info">
+          {currentProject && (
+            <span className="workspace-name">{currentProject.name}</span>
+          )}
+          {(vcsInfo?.branch || pathInfo?.root) && (
+            <span className="workspace-meta">
+              {vcsInfo?.branch && (
+                <>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <line x1="6" y1="3" x2="6" y2="15" />
+                    <circle cx="18" cy="6" r="3" />
+                    <circle cx="6" cy="18" r="3" />
+                    <path d="M18 9a9 9 0 0 1-9 9" />
+                  </svg>
+                  {vcsInfo.branch}
+                  {vcsInfo.dirty ? <span className="workspace-dirty">*</span> : null}
+                </>
+              )}
+            </span>
           )}
         </div>
-      </section>
+        <div className={`stream-dot stream-dot-${streamState}`} title={`Stream: ${streamState}`} />
+      </div>
 
-      <div className="session-list">
-        {sessions.length === 0 ? (
-          <div className="empty-card">
-            <strong>Nessuna sessione</strong>
-            <span>Crea una nuova sessione per iniziare a parlare con l'agente.</span>
-          </div>
+      {/* Sessions header + new button */}
+      <div className="sidebar-sessions-head">
+        <span className="sidebar-section-label">Sessions</span>
+        <button
+          className="sidebar-new-btn"
+          type="button"
+          onClick={onCreate}
+          title="New session"
+          aria-label="New session"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Session list */}
+      <div className="sessions-list">
+        {isLoading && sessions.length === 0 ? (
+          <div className="sidebar-empty">Loading sessions...</div>
+        ) : sessions.length === 0 ? (
+          <div className="sidebar-empty">No sessions yet. Create one to start.</div>
         ) : (
           sessions.map((session) => {
             const isActive = session.id === selectedSessionId;
-
             return (
-              <article
+              <div
                 key={session.id}
-                className={`session-card ${isActive ? "session-card-active" : ""}`}
+                className={`session-item ${isActive ? "session-item-active" : ""}`}
               >
-                <button className="session-trigger" type="button" onClick={() => onSelect(session.id)}>
-                  <span className="session-title">{session.title}</span>
-                  <span className="session-meta">
-                    <span>{session.status}</span>
-                    <span>{formatDate(session.updatedAt)}</span>
-                  </span>
-                </button>
-
                 <button
-                  className="session-delete"
+                  className="session-item-trigger"
+                  type="button"
+                  onClick={() => onSelect(session.id)}
+                >
+                  <span className="session-item-title">{session.title}</span>
+                  <div className="session-item-meta">
+                    <span className={`session-status session-status-${session.status}`}>
+                      {session.status}
+                    </span>
+                    <span className="session-time">{formatRelative(session.updatedAt)}</span>
+                  </div>
+                </button>
+                <button
+                  className="session-delete-btn"
                   type="button"
                   onClick={() => onDelete(session.id)}
-                  title="Elimina sessione"
+                  title="Delete session"
+                  aria-label="Delete session"
                 >
-                  ×
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
                 </button>
-              </article>
+              </div>
             );
           })
         )}
       </div>
 
-      <section className="sidebar-section">
-        <div className="sidebar-section-head">
-          <h3>Providers</h3>
-          <span>{providers.length}</span>
-        </div>
+      {/* Collapsible sections */}
+      <div className="sidebar-extras">
+        {/* Agents */}
+        {agents.length > 0 && (
+          <div className="sidebar-extra-section">
+            <button
+              className="sidebar-extra-toggle"
+              type="button"
+              onClick={() => setShowAgents((v) => !v)}
+            >
+              <span>Agents</span>
+              <span className="sidebar-extra-count">{agents.length}</span>
+              <svg
+                className={`sidebar-chevron ${showAgents ? "open" : ""}`}
+                width="12" height="12" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              >
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+            {showAgents && (
+              <div className="sidebar-extra-list">
+                {agents.slice(0, 8).map((agent) => (
+                  <div key={agent.id} className="sidebar-extra-item">
+                    <span className="sidebar-extra-item-name">{agent.id}</span>
+                    {agent.description && (
+                      <span className="sidebar-extra-item-sub">{agent.description}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
-        <div className="provider-list">
-          {providers.length === 0 ? (
-            <div className="empty-inline">Nessun provider visibile dal server.</div>
-          ) : (
-            providers.slice(0, 6).map((provider) => {
-              const canStartOAuth =
-                provider.authMethods.length === 0 || provider.authMethods.includes("oauth");
+        {/* Providers */}
+        {providers.length > 0 && (
+          <div className="sidebar-extra-section">
+            <button
+              className="sidebar-extra-toggle"
+              type="button"
+              onClick={() => setShowProviders((v) => !v)}
+            >
+              <span>Providers</span>
+              <span className="sidebar-extra-count">{providers.length}</span>
+              <svg
+                className={`sidebar-chevron ${showProviders ? "open" : ""}`}
+                width="12" height="12" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              >
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+            {showProviders && (
+              <div className="sidebar-extra-list">
+                {providers.slice(0, 8).map((provider) => {
+                  const canOAuth =
+                    provider.authMethods.length === 0 || provider.authMethods.includes("oauth");
+                  return (
+                    <div key={provider.id} className="sidebar-provider-item">
+                      <div className="sidebar-extra-item">
+                        <span className="sidebar-extra-item-name">{provider.name}</span>
+                        {provider.defaultModel && (
+                          <span className="sidebar-extra-item-sub">{provider.defaultModel}</span>
+                        )}
+                      </div>
+                      {canOAuth && (
+                        <button
+                          className="sidebar-oauth-btn"
+                          type="button"
+                          onClick={() => onProviderLogin(provider.id)}
+                          title="Connect via OAuth"
+                        >
+                          Auth
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
-              return (
-                <article key={provider.id} className="provider-card">
-                  <div className="provider-copy">
-                    <strong>{provider.name}</strong>
-                    <span>{providerSubtitle(provider)}</span>
-                    <span>
-                      {provider.authMethods.length > 0
-                        ? provider.authMethods.join(" • ")
-                        : provider.connected
-                          ? "connected"
-                          : "auth methods n/d"}
+        {/* Events */}
+        {events.length > 0 && (
+          <div className="sidebar-extra-section">
+            <button
+              className="sidebar-extra-toggle"
+              type="button"
+              onClick={() => setShowEvents((v) => !v)}
+            >
+              <span>Events</span>
+              <span className="sidebar-extra-count">{events.length}</span>
+              <svg
+                className={`sidebar-chevron ${showEvents ? "open" : ""}`}
+                width="12" height="12" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              >
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+            {showEvents && (
+              <div className="sidebar-extra-list">
+                {events.slice(0, 8).map((event) => (
+                  <div key={`${event.type}-${event.receivedAt}`} className="event-item">
+                    <span className="event-type">{event.type}</span>
+                    <span className="event-time">
+                      {formatRelative(new Date(event.receivedAt).toISOString())}
                     </span>
                   </div>
-                  <button
-                    className="button button-secondary"
-                    type="button"
-                    onClick={() => onProviderLogin(provider.id)}
-                    disabled={!canStartOAuth}
-                    title={canStartOAuth ? "Avvia login OAuth" : "Provider senza OAuth esposto"}
-                  >
-                    {canStartOAuth ? "OAuth" : "API key"}
-                  </button>
-                </article>
-              );
-            })
-          )}
-        </div>
-      </section>
-
-      <section className="sidebar-section">
-        <div className="sidebar-section-head">
-          <h3>Ultimi eventi</h3>
-          <span>{isLoading ? "sync" : "live"}</span>
-        </div>
-
-        <div className="event-list">
-          {events.length === 0 ? (
-            <div className="empty-inline">Lo stream mostrerà qui gli eventi in arrivo.</div>
-          ) : (
-            events.slice(0, 6).map((event) => (
-              <div key={`${event.type}-${event.receivedAt}`} className="event-row">
-                <strong>{event.type}</strong>
-                <span>{formatDate(new Date(event.receivedAt).toISOString())}</span>
+                ))}
               </div>
-            ))
-          )}
-        </div>
-      </section>
+            )}
+          </div>
+        )}
+      </div>
     </aside>
   );
 }

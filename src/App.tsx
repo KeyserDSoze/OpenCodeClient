@@ -30,19 +30,25 @@ import {
   detectKnownServerProfiles,
   loadLastSession,
   loadPromptMode,
+  loadRememberConnection,
   loadSelectedAgent,
   loadSelectedModel,
   loadSelectedTools,
   loadServerConfig,
   loadSessionsCache,
+  loadSidebarCollapsed,
+  loadTheme,
   saveLastSession,
   savePromptMode,
+  saveRememberConnection,
   saveSelectedAgent,
   saveSelectedModel,
   saveSelectedTools,
   saveServerConfig,
   saveServerProfile,
   saveSessionsCache,
+  saveSidebarCollapsed,
+  saveTheme,
 } from "./storage/config";
 import type {
   AgentSummary,
@@ -59,6 +65,7 @@ import type {
   StreamEvent,
   VcsInfo,
 } from "./types/opencode";
+import type { Theme } from "./storage/config";
 
 type HealthState =
   | { status: "idle" }
@@ -138,7 +145,7 @@ function attachLocalRequestMeta(
 }
 
 function sessionTimestampTitle() {
-  return `Remote session ${new Intl.DateTimeFormat("it-IT", {
+  return `Session ${new Intl.DateTimeFormat("en-GB", {
     day: "2-digit",
     month: "short",
     hour: "2-digit",
@@ -160,6 +167,10 @@ function makeOptimisticMessage(text: string, requestMeta?: MessageRequestMeta): 
   };
 }
 
+function applyTheme(theme: Theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+}
+
 export default function App() {
   const [bootstrap] = useState(() => ({
     config: loadServerConfig(),
@@ -170,13 +181,20 @@ export default function App() {
     selectedAgent: loadSelectedAgent(),
     selectedModel: loadSelectedModel(),
     selectedTools: loadSelectedTools(),
+    theme: loadTheme(),
+    rememberConnection: loadRememberConnection(),
+    sidebarCollapsed: loadSidebarCollapsed(),
   }));
+
+  const [theme, setTheme] = useState<Theme>(bootstrap.theme);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(bootstrap.sidebarCollapsed);
   const [config, setConfig] = useState<ServerConfig | null>(bootstrap.config);
   const [knownProfiles, setKnownProfiles] = useState<KnownServerProfile[]>(bootstrap.knownProfiles);
   const [setupFormConfig, setSetupFormConfig] = useState<ServerConfig>(
     bootstrap.config ?? DEFAULT_SERVER_CONFIG,
   );
-  const [showSetup, setShowSetup] = useState(!bootstrap.config);
+  // If remember was set and we have a config, start connected (auto-connect on mount)
+  const [showSetup, setShowSetup] = useState(!bootstrap.config || !bootstrap.rememberConnection);
   const [showDocs, setShowDocs] = useState(false);
   const [health, setHealth] = useState<HealthState>(
     bootstrap.config ? { status: "checking" } : { status: "idle" },
@@ -209,6 +227,25 @@ export default function App() {
   const streamCleanupRef = useRef<(() => void) | null>(null);
   const sessionsRefreshTimerRef = useRef<number | null>(null);
   const messagesRefreshTimerRef = useRef<number | null>(null);
+
+  // Apply theme on mount and changes
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
+
+  const handleToggleTheme = useCallback(() => {
+    const next: Theme = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    saveTheme(next);
+  }, [theme]);
+
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      saveSidebarCollapsed(next);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
@@ -407,7 +444,7 @@ export default function App() {
         },
         onError: (error) => {
           setStreamState("error");
-          setNotice(`Stream SSE interrotto: ${toErrorMessage(error)}`);
+          setNotice(`SSE stream interrupted: ${toErrorMessage(error)}`);
         },
       });
     },
@@ -415,7 +452,7 @@ export default function App() {
   );
 
   const connectToServer = useCallback(
-    async (nextConfig: ServerConfig) => {
+    async (nextConfig: ServerConfig, remember?: boolean) => {
       setSetupFormConfig(nextConfig);
       setIsConnecting(true);
       setErrorMessage(null);
@@ -426,7 +463,7 @@ export default function App() {
         const healthResponse = await getHealth(nextConfig);
 
         if (!healthResponse.healthy) {
-          throw new Error("Il server ha risposto ma non risulta healthy");
+          throw new Error("Server responded but is not healthy");
         }
 
         const [nextProviders, nextSessions, workspaceMeta] = await Promise.all([
@@ -442,7 +479,12 @@ export default function App() {
           null;
 
         setConfig(nextConfig);
-        saveServerConfig(nextConfig);
+        if (remember !== undefined) {
+          saveRememberConnection(remember);
+        }
+        if (remember || loadRememberConnection()) {
+          saveServerConfig(nextConfig);
+        }
         saveServerProfile(nextConfig);
         setKnownProfiles(detectKnownServerProfiles());
         setProviders(nextProviders);
@@ -481,11 +523,27 @@ export default function App() {
     [fetchWorkspaceMeta, startEventStream],
   );
 
+  // Auto-connect if remember was set
   useEffect(() => {
-    if (bootstrap.config) {
+    if (bootstrap.config && bootstrap.rememberConnection) {
       void connectToServer(bootstrap.config);
     }
-  }, [bootstrap.config, connectToServer]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleLogout = useCallback(() => {
+    streamCleanupRef.current?.();
+    saveRememberConnection(false);
+    setConfig(null);
+    setSessions([]);
+    setMessages([]);
+    setProviders([]);
+    setAgents([]);
+    setEvents([]);
+    setHealth({ status: "idle" });
+    setStreamState("offline");
+    setSetupFormConfig(DEFAULT_SERVER_CONFIG);
+    setShowSetup(true);
+  }, []);
 
   const handleSelectSession = useCallback(
     async (sessionId: string) => {
@@ -569,7 +627,7 @@ export default function App() {
         return;
       }
 
-      const confirmed = window.confirm(`Eliminare la sessione "${targetSession.title}"?`);
+      const confirmed = window.confirm(`Delete session "${targetSession.title}"?`);
 
       if (!confirmed) {
         return;
@@ -604,7 +662,7 @@ export default function App() {
     const activeConfig = configRef.current;
 
     if (!activeConfig) {
-      throw new Error("Config server non disponibile");
+      throw new Error("Server config not available");
     }
 
     if (selectedSessionIdRef.current) {
@@ -646,7 +704,6 @@ export default function App() {
 
       if (promptMode === "async") {
         await sendAsyncMessage(activeConfig, sessionId, payload);
-        setNotice("Prompt inviato in modalita async. Attendo risposta via stream SSE...");
       } else {
         await sendMessage(activeConfig, sessionId, payload);
       }
@@ -670,7 +727,7 @@ export default function App() {
       const url = await authorizeProviderOAuth(activeConfig, providerId);
 
       if (!url) {
-        throw new Error("Il server non ha restituito un URL OAuth");
+        throw new Error("Server did not return an OAuth URL");
       }
 
       window.open(url, "_blank", "noopener,noreferrer");
@@ -689,7 +746,6 @@ export default function App() {
 
     try {
       await abortSession(activeConfig, sessionId);
-      setNotice("Sessione interrotta. Ricarico stato e messaggi...");
       await loadSessions(activeConfig, sessionId);
       await loadMessages(activeConfig, sessionId);
     } catch (error) {
@@ -710,8 +766,8 @@ export default function App() {
         knownProfiles={knownProfiles}
         isBusy={isConnecting}
         error={errorMessage}
-        onSubmit={(nextConfig) => {
-          void connectToServer(nextConfig);
+        onSubmit={(nextConfig, remember) => {
+          void connectToServer(nextConfig, remember);
         }}
         onConnectKnownProfile={(profile) => {
           void connectToServer(profile);
@@ -727,52 +783,138 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      {/* Topbar */}
       <header className="topbar">
-        <div>
-          <span className="eyebrow">OpenCode Remote Client</span>
-          <h1>Browser console per sessioni, stream e provider.</h1>
+        <div className="topbar-left">
+          <button
+            className="sidebar-toggle"
+            type="button"
+            onClick={handleToggleSidebar}
+            title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+            aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+          >
+            <span className="sidebar-toggle-icon" />
+            <span className="sidebar-toggle-icon" />
+            <span className="sidebar-toggle-icon" />
+          </button>
+          <div className="topbar-brand">
+            <span className="topbar-logo">
+              <svg width="20" height="20" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                <rect width="32" height="32" rx="8" fill="var(--accent)" opacity="0.2" />
+                <path d="M8 16C8 11.582 11.582 8 16 8s8 3.582 8 8-3.582 8-8 8-8-3.582-8-8z" stroke="var(--accent)" strokeWidth="2" fill="none" />
+                <path d="M13 16l2 2 4-4" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </span>
+            <span className="topbar-name">OpenCode</span>
+            {health.status === "connected" && health.version && (
+              <span className="topbar-version">{health.version}</span>
+            )}
+          </div>
         </div>
 
-        <div className="topbar-actions">
-          <div className="status-cluster">
-            <span className="status-chip">
-              Server: {health.status === "connected" ? "online" : health.status}
-            </span>
-            <span className="status-chip">
-              Versione: {health.status === "connected" ? health.version ?? "n/d" : "-"}
-            </span>
-            <span className="status-chip">SSE: {streamState}</span>
-            <span className="status-chip">Project: {currentProject?.name ?? "n/d"}</span>
-            <span className="status-chip">
-              Branch: {vcsInfo?.branch ?? "n/d"}
-              {vcsInfo?.dirty ? " *" : ""}
-            </span>
-            <span className="status-chip">Agents: {agents.length}</span>
+        <div className="topbar-center">
+          {currentSession && (
+            <span className="topbar-session-title">{currentSession.title}</span>
+          )}
+        </div>
+
+        <div className="topbar-right">
+          <div className="status-indicator">
+            <span className={`status-dot status-dot-${streamState}`} title={`SSE: ${streamState}`} />
+            <span className="status-label">{streamState}</span>
           </div>
 
-          <button className="button button-secondary" type="button" onClick={handleRefresh}>
-            Refresh
-          </button>
-          <button className="button button-secondary" type="button" onClick={() => setShowDocs(true)}>
-            Docs
-          </button>
+          {currentProject && (
+            <span className="topbar-chip">
+              {currentProject.name}
+              {vcsInfo?.branch ? ` · ${vcsInfo.branch}` : ""}
+              {vcsInfo?.dirty ? " *" : ""}
+            </span>
+          )}
+
           <button
-            className="button button-secondary"
+            className="icon-btn"
+            type="button"
+            onClick={handleToggleTheme}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            aria-label="Toggle theme"
+          >
+            {theme === "dark" ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="5" />
+                <line x1="12" y1="1" x2="12" y2="3" />
+                <line x1="12" y1="21" x2="12" y2="23" />
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                <line x1="1" y1="12" x2="3" y2="12" />
+                <line x1="21" y1="12" x2="23" y2="12" />
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              </svg>
+            )}
+          </button>
+
+          <button
+            className="icon-btn"
+            type="button"
+            onClick={handleRefresh}
+            title="Refresh"
+            aria-label="Refresh"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="1 4 1 10 7 10" />
+              <path d="M3.51 15a9 9 0 1 0 .49-3" />
+            </svg>
+          </button>
+
+          <button
+            className="icon-btn"
             type="button"
             onClick={() => {
               setSetupFormConfig(config);
               setShowSetup(true);
             }}
+            title="Server settings"
+            aria-label="Server settings"
           >
-            Settings
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
+
+          <button
+            className="icon-btn icon-btn-danger"
+            type="button"
+            onClick={handleLogout}
+            title="Disconnect"
+            aria-label="Disconnect from server"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
           </button>
         </div>
       </header>
 
-      {notice ? <div className="notice">{notice}</div> : null}
-      {errorMessage ? <div className="notice notice-error">{errorMessage}</div> : null}
+      {notice ? (
+        <div className="app-notice app-notice-info" role="status">{notice}
+          <button className="notice-close" onClick={() => setNotice(null)} aria-label="Dismiss">×</button>
+        </div>
+      ) : null}
+      {errorMessage ? (
+        <div className="app-notice app-notice-error" role="alert">{errorMessage}
+          <button className="notice-close" onClick={() => setErrorMessage(null)} aria-label="Dismiss">×</button>
+        </div>
+      ) : null}
 
-      <main className="workspace-grid">
+      <div className={`workspace ${sidebarCollapsed ? "workspace-sidebar-collapsed" : ""}`}>
         <SessionsPage
           projects={projects}
           currentProject={currentProject}
@@ -846,7 +988,7 @@ export default function App() {
           }}
           onSend={handleSend}
         />
-      </main>
+      </div>
     </div>
   );
 }

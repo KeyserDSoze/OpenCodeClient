@@ -8,6 +8,9 @@ export const PROMPT_MODE_KEY = "opencode_prompt_mode";
 export const SELECTED_AGENT_KEY = "opencode_selected_agent";
 export const SELECTED_MODEL_KEY = "opencode_selected_model";
 export const SELECTED_TOOLS_KEY = "opencode_selected_tools";
+export const REMEMBER_CONNECTION_KEY = "opencode_remember_connection";
+export const THEME_KEY = "opencode_theme";
+export const SIDEBAR_COLLAPSED_KEY = "opencode_sidebar_collapsed";
 
 const STORAGE_KEYS_TO_IGNORE = new Set([
   SESSIONS_CACHE_KEY,
@@ -16,6 +19,9 @@ const STORAGE_KEYS_TO_IGNORE = new Set([
   SELECTED_AGENT_KEY,
   SELECTED_MODEL_KEY,
   SELECTED_TOOLS_KEY,
+  REMEMBER_CONNECTION_KEY,
+  THEME_KEY,
+  SIDEBAR_COLLAPSED_KEY,
 ]);
 
 export const DEFAULT_SERVER_CONFIG: ServerConfig = {
@@ -329,4 +335,54 @@ export function saveSelectedTools(toolIds: string[]) {
   }
 
   window.localStorage.setItem(SELECTED_TOOLS_KEY, JSON.stringify(toolIds));
+}
+
+export function loadRememberConnection(): boolean {
+  if (!canUseStorage()) {
+    return false;
+  }
+  return window.localStorage.getItem(REMEMBER_CONNECTION_KEY) === "true";
+}
+
+export function saveRememberConnection(remember: boolean) {
+  if (!canUseStorage()) {
+    return;
+  }
+  if (remember) {
+    window.localStorage.setItem(REMEMBER_CONNECTION_KEY, "true");
+  } else {
+    window.localStorage.removeItem(REMEMBER_CONNECTION_KEY);
+    window.localStorage.removeItem(SERVER_CONFIG_KEY);
+  }
+}
+
+export type Theme = "dark" | "light";
+
+export function loadTheme(): Theme {
+  if (!canUseStorage()) {
+    return "dark";
+  }
+  const stored = window.localStorage.getItem(THEME_KEY);
+  return stored === "light" ? "light" : "dark";
+}
+
+export function saveTheme(theme: Theme) {
+  if (!canUseStorage()) {
+    return;
+  }
+  window.localStorage.setItem(THEME_KEY, theme);
+}
+
+export function loadSidebarCollapsed(): boolean {
+  if (!canUseStorage()) {
+    return false;
+  }
+  return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+}
+
+export function saveSidebarCollapsed(collapsed: boolean) {
+  if (!canUseStorage()) {
+    return;
+  }
+  window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "true" : "false");
 }
