@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <rect width="192" height="192" rx="32" fill="#0a0a0b"/>
+  <rect x="16" y="16" width="160" height="160" rx="24" fill="#111113"/>
+  <!-- terminal prompt chevron -->
+  <polyline points="48,80 80,96 48,112" fill="none" stroke="#14b8a6" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- cursor bar -->
+  <rect x="90" y="88" width="54" height="16" rx="4" fill="#14b8a6"/>
+</svg>

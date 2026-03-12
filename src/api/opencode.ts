@@ -809,6 +809,24 @@ export async function deleteSession(config: ServerConfig, sessionId: string) {
   return payload ?? true;
 }
 
+export async function renameSession(
+  config: ServerConfig,
+  sessionId: string,
+  title: string,
+): Promise<SessionSummary> {
+  // Try PATCH first; fall back to POST with a title update body
+  const payload = await requestJson<unknown>(config, `/session/${sessionId}`, {
+    method: "PATCH",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ title }),
+  });
+
+  return normalizeSession(payload ?? {});
+}
+
 export async function forkSession(config: ServerConfig, sessionId: string, messageID?: string) {
   const payload = await requestJson<unknown>(config, `/session/${sessionId}/fork`, {
     method: "POST",
@@ -1073,8 +1091,152 @@ export function subscribeToEvents(
 }
 
 export function extractMessageText(message: SessionMessage) {
+  // If we have live streaming text, prefer it
+  if (message.streamingText) return message.streamingText;
   const content = message.parts.map(textFromPart).filter(Boolean).join("\n\n").trim();
   return content || "Messaggio senza contenuto testuale.";
+}
+
+/**
+ * Send a message and stream the assistant response via SSE.
+ * Calls onToken with each new text delta, onDone when the stream ends.
+ * Returns an abort function.
+ */
+export function streamMessage(
+  config: ServerConfig,
+  sessionId: string,
+  input: SendMessageInput | string,
+  handlers: {
+    onToken: (delta: string) => void;
+    onDone: () => void;
+    onError?: (err: Error) => void;
+  },
+): () => void {
+  const controller = new AbortController();
+  const body = JSON.stringify(createMessageBody(input));
+
+  void (async () => {
+    // Try the streaming endpoint first, fall back to non-streaming prompt endpoint
+    const urls = [
+      buildUrl(config, `/session/${sessionId}/message/stream`),
+      buildUrl(config, `/session/${sessionId}/prompt_stream`),
+      buildUrl(config, `/session/${sessionId}/message`),
+      buildUrl(config, `/session/${sessionId}/prompt`),
+    ];
+
+    let response: Response | null = null;
+    let lastError: Error = new Error("Stream non disponibile");
+
+    for (const url of urls) {
+      try {
+        const r = await fetch(url, {
+          method: "POST",
+          signal: controller.signal,
+          headers: createHeaders(config, {
+            Accept: "text/event-stream, application/json",
+            "Content-Type": "application/json",
+            "Cache-Control": "no-cache",
+          }),
+          body,
+        });
+        if (r.ok) {
+          response = r;
+          break;
+        }
+        if (r.status !== 404 && r.status !== 405) {
+          const details = await responseText(r);
+          throw new ApiError(r.status, details || `${r.status} ${r.statusText}`);
+        }
+      } catch (err) {
+        if ((err as Error).name === "AbortError") return;
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+    }
+
+    if (!response) {
+      handlers.onError?.(lastError);
+      handlers.onDone();
+      return;
+    }
+
+    const contentType = response.headers.get("content-type") ?? "";
+
+    // If the server returned plain JSON (non-streaming fallback), emit the whole thing
+    if (!contentType.includes("event-stream") && !contentType.includes("stream")) {
+      try {
+        const text = await responseText(response);
+        if (text) {
+          const parsed = JSON.parse(text) as unknown;
+          const msg = normalizeMessage(parsed);
+          const msgText = msg.parts.map(textFromPart).filter(Boolean).join("\n\n").trim();
+          if (msgText) handlers.onToken(msgText);
+        }
+      } catch {
+        // ignore
+      }
+      handlers.onDone();
+      return;
+    }
+
+    // SSE stream
+    const reader = response.body?.getReader();
+    if (!reader) { handlers.onDone(); return; }
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split(/\r?\n\r?\n/);
+        buffer = blocks.pop() ?? "";
+
+        for (const block of blocks) {
+          const parsed = parseEventBlock(block);
+          if (!parsed) continue;
+
+          const data = asRecord(parsed.data);
+
+          // Extract text delta from various event shapes
+          const delta =
+            pickString(
+              data.delta,
+              data.text,
+              data.content,
+              pickNested(data, ["choices", "0", "delta", "content"]) as string | undefined,
+              pickNested(data, ["part", "text"]) as string | undefined,
+            );
+
+          if (delta) {
+            handlers.onToken(delta);
+          }
+
+          // Stream done signals
+          if (
+            parsed.type === "done" ||
+            parsed.type === "message.done" ||
+            parsed.type === "session.done" ||
+            pickString(data.type) === "done" ||
+            data.done === true
+          ) {
+            handlers.onDone();
+            reader.cancel();
+            return;
+          }
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        handlers.onError?.(err instanceof Error ? err : new Error(String(err)));
+      }
+    } finally {
+      handlers.onDone();
+    }
+  })();
+
+  return () => controller.abort();
 }
 
 export function extractEventSessionId(event: StreamEvent) {

@@ -1,27 +1,27 @@
+import { useState } from "react";
 import { extractMessageText } from "../api/opencode";
+import { highlightCode, parseMarkdown } from "../lib/markdown";
 import type { SessionMessage } from "../types/opencode";
 
 interface MessageProps {
   message: SessionMessage;
+  /** When true, renders a pulsing cursor at the end (streaming) */
+  isStreaming?: boolean;
 }
 
 function roleLabel(role: string) {
   switch (role.toLowerCase()) {
-    case "assistant":
-      return "Assistant";
-    case "user":
-      return "You";
-    case "system":
-      return "System";
-    default:
-      return role;
+    case "assistant": return "Assistant";
+    case "user":      return "You";
+    case "system":    return "System";
+    default:          return role;
   }
 }
 
 function roleTone(role: string) {
   const lower = role.toLowerCase();
   if (lower.includes("assistant")) return "assistant";
-  if (lower.includes("user")) return "user";
+  if (lower.includes("user"))      return "user";
   return "system";
 }
 
@@ -29,10 +29,7 @@ function formatTime(value?: string) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
+  return new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
 function AssistantAvatar() {
@@ -56,20 +53,103 @@ function UserAvatar() {
   );
 }
 
-export function Message({ message }: MessageProps) {
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    });
+  };
+
+  return (
+    <button
+      className={`code-copy-btn ${copied ? "code-copy-btn-success" : ""}`}
+      type="button"
+      onClick={handleCopy}
+      title={copied ? "Copied!" : "Copy code"}
+      aria-label={copied ? "Copied!" : "Copy code"}
+    >
+      {copied ? (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      ) : (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
+interface CodeBlockProps {
+  code: string;
+  lang: string;
+}
+
+function CodeBlock({ code, lang }: CodeBlockProps) {
+  const highlighted = highlightCode(code, lang);
+  const displayLang = lang && lang !== "plaintext" ? lang : null;
+
+  return (
+    <div className="code-block">
+      <div className="code-block-header">
+        {displayLang && <span className="code-block-lang">{displayLang}</span>}
+        <CopyButton text={code} />
+      </div>
+      <pre
+        className="code-block-pre"
+        // eslint-disable-next-line react/no-danger
+        dangerouslySetInnerHTML={{ __html: highlighted }}
+      />
+    </div>
+  );
+}
+
+function MarkdownBody({ text, isStreaming }: { text: string; isStreaming?: boolean }) {
+  const blocks = parseMarkdown(text);
+
+  return (
+    <div className="md-body">
+      {blocks.map((block, index) => {
+        if (block.type === "code" && block.code !== undefined) {
+          return <CodeBlock key={index} code={block.code} lang={block.lang ?? "plaintext"} />;
+        }
+        return (
+          <div
+            key={index}
+            className="md-prose"
+            // eslint-disable-next-line react/no-danger
+            dangerouslySetInnerHTML={{ __html: block.html ?? "" }}
+          />
+        );
+      })}
+      {isStreaming && <span className="msg-stream-cursor" aria-hidden="true" />}
+    </div>
+  );
+}
+
+export function Message({ message, isStreaming }: MessageProps) {
   const tone = roleTone(message.info.role);
   const text = extractMessageText(message);
   const time = formatTime(message.info.updatedAt ?? message.info.createdAt);
   const metaItems = [
-    message.requestMeta?.agent ? message.requestMeta.agent : null,
-    message.requestMeta?.model ? message.requestMeta.model.split("/").pop() ?? message.requestMeta.model : null,
+    message.requestMeta?.agent ?? null,
+    message.requestMeta?.model
+      ? (message.requestMeta.model.split("/").pop() ?? message.requestMeta.model)
+      : null,
   ].filter(Boolean) as string[];
 
   if (tone === "system") {
     return (
       <div className="msg-system">
         <span className="msg-system-label">System</span>
-        <pre className="msg-body">{text}</pre>
+        <div className="md-body">
+          <pre className="msg-system-pre">{text}</pre>
+        </div>
       </div>
     );
   }
@@ -89,7 +169,12 @@ export function Message({ message }: MessageProps) {
           </div>
         )}
 
-        <pre className="msg-body">{text}</pre>
+        {isUser ? (
+          // User messages: plain pre (no markdown parsing needed)
+          <pre className="msg-user-text">{text}</pre>
+        ) : (
+          <MarkdownBody text={text} isStreaming={isStreaming} />
+        )}
 
         <div className="msg-footer">
           {message.optimistic && (

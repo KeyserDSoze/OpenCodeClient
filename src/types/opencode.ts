@@ -81,6 +81,10 @@ export interface SessionMessage {
   parts: MessagePart[];
   requestMeta?: MessageRequestMeta;
   optimistic?: boolean;
+  /** Set during streaming — accumulated text so far */
+  streamingText?: string;
+  /** True while this message is still receiving tokens */
+  isStreaming?: boolean;
 }
 
 export interface SendMessageInput {

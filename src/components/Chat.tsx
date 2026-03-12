@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent, SyntheticEvent } from "react";
+import type { DragEvent, FormEvent, KeyboardEvent, SyntheticEvent } from "react";
 import type {
   AgentSummary,
   ComposerSelectOption,
@@ -35,6 +35,42 @@ interface ChatProps {
   onSend: (text: string) => Promise<void> | void;
 }
 
+// ── Export helpers ────────────────────────────────────────────────────────────
+
+function messagesToPlainText(messages: SessionMessage[]): string {
+  return messages
+    .map((m) => {
+      const role = m.info.role.toLowerCase().includes("user") ? "User" : "Assistant";
+      const text = extractMessageText(m);
+      return `[${role}]\n${text}`;
+    })
+    .join("\n\n---\n\n");
+}
+
+function messagesToMarkdown(messages: SessionMessage[], title?: string): string {
+  const lines: string[] = [];
+  if (title) lines.push(`# ${title}`, "");
+  messages.forEach((m) => {
+    const isUser = m.info.role.toLowerCase().includes("user");
+    const role = isUser ? "**User**" : "**Assistant**";
+    const text = extractMessageText(m);
+    lines.push(`${role}`, "", text, "", "---", "");
+  });
+  return lines.join("\n");
+}
+
+function downloadText(content: string, filename: string, mime: string) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
 export function Chat({
   agents,
   config,
@@ -59,10 +95,13 @@ export function Chat({
   const [draft, setDraft] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showApiTools, setShowApiTools] = useState(false);
-  // STT auto-send: default true → invia subito; false → appende al draft
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  // STT auto-send: default true → send immediately; false → append to draft
   const [sttAutoSend, setSttAutoSend] = useState(true);
   const endRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const exportMenuRef = useRef<HTMLDivElement | null>(null);
   // Keep a ref so the STT onEnd callback always sees the latest value
   const sttAutoSendRef = useRef(sttAutoSend);
   const draftRef = useRef(draft);
@@ -86,38 +125,31 @@ export function Chat({
     onEnd: (transcript) => {
       if (!transcript.trim()) return;
       if (sttAutoSendRef.current) {
-        // Auto-send: svuota draft e invia
         setDraft("");
         if (textareaRef.current) textareaRef.current.style.height = "auto";
         void onSend(transcript.trim());
       } else {
-        // Append: aggiunge al draft esistente con spazio
         setDraft((prev) => {
           const base = prev.trimEnd();
           const next = base ? `${base} ${transcript.trim()}` : transcript.trim();
           return next;
         });
-        // Resize dopo il render
         setTimeout(resizeTextarea, 0);
       }
     },
   });
 
-  // ── TTS: speak new assistant messages (or their deltas) ──────────────────
+  // ── TTS: speak new assistant messages ────────────────────────────────────
   useEffect(() => {
     if (!tts.enabled) return;
-
     messages.forEach((msg) => {
       const role = msg.info.role.toLowerCase();
       if (!role.includes("assistant")) return;
       if (msg.optimistic) return;
-
       const id = msg.info.id;
       const text = extractMessageText(msg);
       if (!text) return;
-
       if (!spokenIdsRef.current.has(id)) {
-        // New message we haven't started speaking yet
         spokenIdsRef.current.add(id);
         tts.enqueue(text);
       }
@@ -131,7 +163,19 @@ export function Chat({
     }
   }, [tts.enabled]);
 
-  // ── General ──────────────────────────────────────────────────────────────
+  // ── Close export menu on outside click ───────────────────────────────────
+  useEffect(() => {
+    if (!showExportMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setShowExportMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showExportMenu]);
+
+  // ── Derived ───────────────────────────────────────────────────────────────
   const disabled = isSending || draft.trim().length === 0;
   const hasSelectedAgentOption = !selectedAgent || agents.some((agent) => agent.id === selectedAgent);
   const hasSelectedModelOption =
@@ -144,6 +188,10 @@ export function Chat({
     deliveryMode === "async" ? 1 : 0,
   ].reduce((a, b) => a + b, 0);
 
+  // Show typing indicator when sending but no streaming placeholder yet
+  const hasStreamingMessage = messages.some((m) => m.isStreaming);
+  const showTypingIndicator = isSending && !hasStreamingMessage;
+
   const toggleTool = (toolId: string) => {
     if (selectedTools.includes(toolId)) {
       onSelectedToolsChange(selectedTools.filter((value) => value !== toolId));
@@ -154,7 +202,7 @@ export function Chat({
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages]);
+  }, [messages, showTypingIndicator]);
 
   const title = useMemo(() => session?.title ?? "New conversation", [session]);
 
@@ -179,7 +227,6 @@ export function Chat({
       event.preventDefault();
       await submitDraft();
     }
-    // Shift+Enter falls through naturally, inserting a newline
   };
 
   const handleTextareaInput = (event: SyntheticEvent<HTMLTextAreaElement>) => {
@@ -188,8 +235,116 @@ export function Chat({
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
   };
 
+  // ── Drag & drop ───────────────────────────────────────────────────────────
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragOver(false);
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+
+    // Append file names / paths as text references
+    const filePaths = files.map((f) => f.name).join(", ");
+    setDraft((prev) => {
+      const base = prev.trimEnd();
+      return base ? `${base}\n${filePaths}` : filePaths;
+    });
+    setTimeout(resizeTextarea, 0);
+    textareaRef.current?.focus();
+  };
+
+  // ── Export handlers ───────────────────────────────────────────────────────
+  const handleExportCopy = async () => {
+    setShowExportMenu(false);
+    await navigator.clipboard.writeText(messagesToPlainText(messages));
+  };
+
+  const handleExportMarkdown = () => {
+    setShowExportMenu(false);
+    const filename = `${session?.title ?? "conversation"}.md`.replace(/[/\\?%*:|"<>]/g, "-");
+    downloadText(messagesToMarkdown(messages, session?.title), filename, "text/markdown");
+  };
+
+  const handleExportJson = () => {
+    setShowExportMenu(false);
+    const filename = `${session?.title ?? "conversation"}.json`.replace(/[/\\?%*:|"<>]/g, "-");
+    downloadText(JSON.stringify(messages, null, 2), filename, "application/json");
+  };
+
   return (
     <div className="chat-panel">
+      {/* Chat toolbar (export, reload) */}
+      {messages.length > 0 && (
+        <div className="chat-toolbar">
+          <button
+            className="icon-btn"
+            type="button"
+            onClick={onReload}
+            title="Reload messages"
+            aria-label="Reload messages"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="1 4 1 10 7 10" />
+              <path d="M3.51 15a9 9 0 1 0 .49-3" />
+            </svg>
+          </button>
+
+          <div className="export-menu" ref={exportMenuRef}>
+            <button
+              className="icon-btn"
+              type="button"
+              onClick={() => setShowExportMenu((v) => !v)}
+              title="Export conversation"
+              aria-label="Export conversation"
+              aria-expanded={showExportMenu}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+            </button>
+
+            {showExportMenu && (
+              <div className="export-dropdown">
+                <button className="export-item" type="button" onClick={() => void handleExportCopy()}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                  Copy text
+                </button>
+                <button className="export-item" type="button" onClick={handleExportMarkdown}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                  </svg>
+                  Download .md
+                </button>
+                <button className="export-item" type="button" onClick={handleExportJson}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                  </svg>
+                  Download .json
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Messages area */}
       <div className="chat-messages">
         {messages.length === 0 && !isLoading ? (
@@ -209,8 +364,22 @@ export function Chat({
         ) : (
           <div className="messages-list">
             {messages.map((message) => (
-              <Message key={message.info.id} message={message} />
+              <Message key={message.info.id} message={message} isStreaming={message.isStreaming} />
             ))}
+            {showTypingIndicator && (
+              <div className="msg-row">
+                <div className="msg-avatar msg-avatar-assistant" aria-hidden="true">
+                  <svg width="12" height="12" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                    <path d="M8 16C8 11.582 11.582 8 16 8s8 3.582 8 8-3.582 8-8 8-8-3.582-8-8z" stroke="var(--accent)" strokeWidth="2" fill="none" />
+                  </svg>
+                </div>
+                <div className="typing-indicator">
+                  <span className="typing-dots">
+                    <span /><span /><span />
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -314,22 +483,31 @@ export function Chat({
         )}
 
         <form className="composer-form" onSubmit={handleSubmit}>
-          <textarea
-            ref={textareaRef}
-            className="composer-textarea"
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={handleKeyDown}
-            onInput={handleTextareaInput}
-            placeholder={
-              stt.status === "listening"
-                ? sttAutoSend
-                  ? "Listening... (will send automatically)"
-                  : "Listening... (will append to draft)"
-                : "Message OpenCode... (Enter to send, Shift+Enter for newline)"
-            }
-            rows={1}
-          />
+          {/* Drag & drop wrapper */}
+          <div
+            className={`composer-drop-zone ${isDragOver ? "drag-over" : ""}`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            <textarea
+              ref={textareaRef}
+              className="composer-textarea"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={handleKeyDown}
+              onInput={handleTextareaInput}
+              placeholder={
+                stt.status === "listening"
+                  ? sttAutoSend
+                    ? "Listening... (will send automatically)"
+                    : "Listening... (will append to draft)"
+                  : "Message OpenCode... (Enter to send, Shift+Enter for newline)"
+              }
+              rows={1}
+            />
+            <div className="composer-drop-overlay">Drop files to attach</div>
+          </div>
 
           <div className="composer-footer">
             <div className="composer-footer-left">
@@ -428,12 +606,11 @@ export function Chat({
                     )}
                   </button>
 
-                  {/* Auto-send pill toggle — only visible when STT is supported */}
                   <button
                     className={`stt-autosend-toggle ${sttAutoSend ? "stt-autosend-on" : "stt-autosend-off"}`}
                     type="button"
                     onClick={() => setSttAutoSend((v) => !v)}
-                    title={sttAutoSend ? "Auto-send ON — click to disable (voice will append to draft instead)" : "Auto-send OFF — click to enable (voice will send immediately)"}
+                    title={sttAutoSend ? "Auto-send ON" : "Auto-send OFF"}
                     aria-label={sttAutoSend ? "Auto-send enabled" : "Auto-send disabled"}
                     aria-pressed={sttAutoSend}
                   >
@@ -448,19 +625,17 @@ export function Chat({
                   className={`composer-btn-icon composer-btn-tts ${tts.enabled ? "tts-active" : ""} ${tts.status === "speaking" ? "tts-speaking" : ""}`}
                   type="button"
                   onClick={tts.toggle}
-                  title={tts.enabled ? "Disable read-aloud" : "Enable read-aloud (auto-reads assistant responses)"}
+                  title={tts.enabled ? "Disable read-aloud" : "Enable read-aloud"}
                   aria-label={tts.enabled ? "Disable text-to-speech" : "Enable text-to-speech"}
                   aria-pressed={tts.enabled}
                 >
                   {tts.status === "speaking" ? (
-                    // Speaker with sound waves while speaking
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
                       <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
                       <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
                     </svg>
                   ) : (
-                    // Speaker icon (muted look when disabled)
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
                       {tts.enabled ? (

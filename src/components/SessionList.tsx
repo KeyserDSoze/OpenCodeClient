@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   AgentSummary,
   PathInfo,
@@ -25,6 +25,7 @@ interface SessionListProps {
   onRefresh: () => void;
   onSelect: (sessionId: string) => void;
   onDelete: (sessionId: string) => void;
+  onRename?: (sessionId: string, newTitle: string) => void;
   onProviderLogin: (providerId: string) => void;
 }
 
@@ -41,6 +42,44 @@ function formatRelative(value?: string) {
   return `${Math.floor(hours / 24)}d`;
 }
 
+function RenameInput({
+  initialValue,
+  onCommit,
+  onCancel,
+}: {
+  initialValue: string;
+  onCommit: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initialValue);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.select();
+  }, []);
+
+  return (
+    <input
+      ref={inputRef}
+      className="session-rename-input"
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          onCommit(value.trim() || initialValue);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          onCancel();
+        }
+      }}
+      onBlur={() => onCommit(value.trim() || initialValue)}
+      onClick={(e) => e.stopPropagation()}
+      aria-label="Rename session"
+    />
+  );
+}
+
 export function SessionList({
   currentProject,
   pathInfo,
@@ -55,11 +94,25 @@ export function SessionList({
   onCreate,
   onSelect,
   onDelete,
+  onRename,
   onProviderLogin,
 }: SessionListProps) {
   const [showAgents, setShowAgents] = useState(false);
   const [showProviders, setShowProviders] = useState(false);
   const [showEvents, setShowEvents] = useState(false);
+  const [search, setSearch] = useState("");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+
+  const filteredSessions = search.trim()
+    ? sessions.filter((s) =>
+        s.title.toLowerCase().includes(search.trim().toLowerCase()),
+      )
+    : sessions;
+
+  function handleRenameCommit(sessionId: string, newTitle: string) {
+    setRenamingId(null);
+    onRename?.(sessionId, newTitle);
+  }
 
   return (
     <aside className="sidebar">
@@ -96,7 +149,7 @@ export function SessionList({
           className="sidebar-new-btn"
           type="button"
           onClick={onCreate}
-          title="New session"
+          title="New session (Ctrl+K)"
           aria-label="New session"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -106,15 +159,30 @@ export function SessionList({
         </button>
       </div>
 
+      {/* Search/filter */}
+      <div className="sidebar-search">
+        <input
+          className="sidebar-search-input"
+          type="search"
+          placeholder="Filter sessions..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          aria-label="Filter sessions"
+        />
+      </div>
+
       {/* Session list */}
       <div className="sessions-list">
         {isLoading && sessions.length === 0 ? (
           <div className="sidebar-empty">Loading sessions...</div>
-        ) : sessions.length === 0 ? (
-          <div className="sidebar-empty">No sessions yet. Create one to start.</div>
+        ) : filteredSessions.length === 0 ? (
+          <div className="sidebar-empty">
+            {search.trim() ? "No sessions match." : "No sessions yet. Create one to start."}
+          </div>
         ) : (
-          sessions.map((session) => {
+          filteredSessions.map((session) => {
             const isActive = session.id === selectedSessionId;
+            const isRenaming = renamingId === session.id;
             return (
               <div
                 key={session.id}
@@ -124,8 +192,19 @@ export function SessionList({
                   className="session-item-trigger"
                   type="button"
                   onClick={() => onSelect(session.id)}
+                  onDoubleClick={() => setRenamingId(session.id)}
                 >
-                  <span className="session-item-title">{session.title}</span>
+                  {isRenaming ? (
+                    <RenameInput
+                      initialValue={session.title}
+                      onCommit={(v) => handleRenameCommit(session.id, v)}
+                      onCancel={() => setRenamingId(null)}
+                    />
+                  ) : (
+                    <span className="session-item-title" title="Double-click to rename">
+                      {session.title}
+                    </span>
+                  )}
                   <div className="session-item-meta">
                     <span className={`session-status session-status-${session.status}`}>
                       {session.status}

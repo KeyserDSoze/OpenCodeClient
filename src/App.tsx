@@ -16,8 +16,9 @@ import {
   getSessions,
   getToolIds,
   getVcsInfo,
+  renameSession,
   sendAsyncMessage,
-  sendMessage,
+  streamMessage,
   subscribeToEvents,
   toErrorMessage,
 } from "./api/opencode";
@@ -25,6 +26,8 @@ import { ChatPage } from "./pages/Chat";
 import { DocsPage } from "./pages/Docs";
 import { SessionsPage } from "./pages/Sessions";
 import { SetupPage } from "./pages/Setup";
+import { ToastContainer } from "./components/ToastContainer";
+import { useToast } from "./hooks/useToast";
 import {
   DEFAULT_SERVER_CONFIG,
   detectKnownServerProfiles,
@@ -219,14 +222,16 @@ export default function App() {
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [streamState, setStreamState] = useState<StreamState>(bootstrap.config ? "connecting" : "offline");
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
+
+  const toast = useToast();
 
   const selectedSessionIdRef = useRef<string | null>(selectedSessionId);
   const configRef = useRef<ServerConfig | null>(bootstrap.config);
   const streamCleanupRef = useRef<(() => void) | null>(null);
   const sessionsRefreshTimerRef = useRef<number | null>(null);
   const messagesRefreshTimerRef = useRef<number | null>(null);
+  const streamingAbortRef = useRef<(() => void) | null>(null);
 
   // Apply theme on mount and changes
   useEffect(() => {
@@ -444,7 +449,7 @@ export default function App() {
         },
         onError: (error) => {
           setStreamState("error");
-          setNotice(`SSE stream interrupted: ${toErrorMessage(error)}`);
+          toast.warning(`SSE stream interrupted: ${toErrorMessage(error)}`);
         },
       });
     },
@@ -455,8 +460,7 @@ export default function App() {
     async (nextConfig: ServerConfig, remember?: boolean) => {
       setSetupFormConfig(nextConfig);
       setIsConnecting(true);
-      setErrorMessage(null);
-      setNotice(null);
+      setConnectError(null);
       setHealth({ status: "checking" });
 
       try {
@@ -512,7 +516,7 @@ export default function App() {
 
         startEventStream(nextConfig);
       } catch (error) {
-        setErrorMessage(toErrorMessage(error));
+        setConnectError(toErrorMessage(error));
         setHealth({ status: "error", error: toErrorMessage(error) });
         setStreamState("offline");
         setShowSetup(true);
@@ -553,7 +557,6 @@ export default function App() {
         return;
       }
 
-      setErrorMessage(null);
       selectedSessionIdRef.current = sessionId;
       setSelectedSessionId(sessionId);
       saveLastSession(sessionId);
@@ -569,7 +572,7 @@ export default function App() {
       return;
     }
 
-    setErrorMessage(null);
+    setConnectError(null);
     const [refreshedSessionId, nextProviders, workspaceMeta] = await Promise.all([
       loadSessions(activeConfig),
       getProviders(activeConfig).catch(() => []),
@@ -597,8 +600,6 @@ export default function App() {
       return;
     }
 
-    setErrorMessage(null);
-
     try {
       const nextSession = await createSession(activeConfig, { title: sessionTimestampTitle() });
       const nextSessions = [nextSession, ...sessions.filter((session) => session.id !== nextSession.id)];
@@ -609,7 +610,7 @@ export default function App() {
       saveLastSession(nextSession.id);
       setMessages([]);
     } catch (error) {
-      setErrorMessage(toErrorMessage(error));
+      toast.error(toErrorMessage(error));
     }
   }, [sessions]);
 
@@ -652,7 +653,7 @@ export default function App() {
           }
         }
       } catch (error) {
-        setErrorMessage(toErrorMessage(error));
+        toast.error(toErrorMessage(error));
       }
     },
     [loadMessages, sessions],
@@ -682,9 +683,11 @@ export default function App() {
   }, [sessions]);
 
   const handleSend = useCallback(async (text: string) => {
-    setErrorMessage(null);
-    setNotice(null);
     setIsSending(true);
+
+    // Abort any previous streaming assistant message
+    streamingAbortRef.current?.();
+    streamingAbortRef.current = null;
 
     try {
       const { sessionId, config: activeConfig } = await ensureSession();
@@ -704,14 +707,57 @@ export default function App() {
 
       if (promptMode === "async") {
         await sendAsyncMessage(activeConfig, sessionId, payload);
+        setIsSending(false);
+        await loadMessages(activeConfig, sessionId);
+        await loadSessions(activeConfig, sessionId);
       } else {
-        await sendMessage(activeConfig, sessionId, payload);
+        // Streaming mode: add a placeholder assistant message and fill it token by token
+        const streamId = `streaming-${Date.now()}`;
+        setMessages((current) => [
+          ...current,
+          {
+            info: { id: streamId, role: "assistant", createdAt: new Date().toISOString(), raw: {} },
+            parts: [],
+            streamingText: "",
+            isStreaming: true,
+          },
+        ]);
+
+        let accumulated = "";
+        const abort = streamMessage(activeConfig, sessionId, payload, {
+          onToken: (delta) => {
+            accumulated += delta;
+            const snap = accumulated;
+            setMessages((current) =>
+              current.map((m) =>
+                m.info.id === streamId ? { ...m, streamingText: snap } : m,
+              ),
+            );
+          },
+          onDone: () => {
+            // Mark streaming message as done, then reload authoritative messages
+            setMessages((current) =>
+              current.map((m) =>
+                m.info.id === streamId ? { ...m, isStreaming: false } : m,
+              ),
+            );
+            setIsSending(false);
+            streamingAbortRef.current = null;
+            void loadMessages(activeConfig, sessionId);
+            void loadSessions(activeConfig, sessionId);
+          },
+          onError: (err) => {
+            setMessages((current) => current.filter((m) => m.info.id !== streamId));
+            toast.error(toErrorMessage(err));
+            setIsSending(false);
+            streamingAbortRef.current = null;
+            void loadMessages(activeConfig, sessionId);
+          },
+        });
+        streamingAbortRef.current = abort;
       }
-      await loadMessages(activeConfig, sessionId);
-      await loadSessions(activeConfig, sessionId);
     } catch (error) {
-      setErrorMessage(toErrorMessage(error));
-    } finally {
+      toast.error(toErrorMessage(error));
       setIsSending(false);
     }
   }, [ensureSession, loadMessages, loadSessions, promptMode, selectedAgent, selectedModel, selectedTools]);
@@ -732,7 +778,7 @@ export default function App() {
 
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (error) {
-      setErrorMessage(toErrorMessage(error));
+      toast.error(toErrorMessage(error));
     }
   }, []);
 
@@ -749,9 +795,48 @@ export default function App() {
       await loadSessions(activeConfig, sessionId);
       await loadMessages(activeConfig, sessionId);
     } catch (error) {
-      setErrorMessage(toErrorMessage(error));
+      toast.error(toErrorMessage(error));
     }
   }, [loadMessages, loadSessions]);
+
+  const handleRenameSession = useCallback(
+    async (sessionId: string, newTitle: string) => {
+      const activeConfig = configRef.current;
+
+      if (!activeConfig) {
+        return;
+      }
+
+      try {
+        const updated = await renameSession(activeConfig, sessionId, newTitle);
+        setSessions((prev) =>
+          prev.map((s) => (s.id === sessionId ? { ...s, title: updated.title || newTitle } : s)),
+        );
+      } catch {
+        // Optimistic update even if server PATCH isn't supported
+        setSessions((prev) =>
+          prev.map((s) => (s.id === sessionId ? { ...s, title: newTitle } : s)),
+        );
+      }
+    },
+    [],
+  );
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        void handleCreateSession();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "/") {
+        e.preventDefault();
+        setShowDocs(true);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [handleCreateSession]);
 
   const setupValue = config ?? DEFAULT_SERVER_CONFIG;
 
@@ -765,7 +850,7 @@ export default function App() {
         initialValue={setupFormConfig ?? setupValue}
         knownProfiles={knownProfiles}
         isBusy={isConnecting}
-        error={errorMessage}
+        error={connectError}
         onSubmit={(nextConfig, remember) => {
           void connectToServer(nextConfig, remember);
         }}
@@ -903,16 +988,7 @@ export default function App() {
         </div>
       </header>
 
-      {notice ? (
-        <div className="app-notice app-notice-info" role="status">{notice}
-          <button className="notice-close" onClick={() => setNotice(null)} aria-label="Dismiss">×</button>
-        </div>
-      ) : null}
-      {errorMessage ? (
-        <div className="app-notice app-notice-error" role="alert">{errorMessage}
-          <button className="notice-close" onClick={() => setErrorMessage(null)} aria-label="Dismiss">×</button>
-        </div>
-      ) : null}
+      <ToastContainer toasts={toast.toasts} onDismiss={toast.removeToast} />
 
       <div className={`workspace ${sidebarCollapsed ? "workspace-sidebar-collapsed" : ""}`}>
         <SessionsPage
@@ -938,6 +1014,9 @@ export default function App() {
           }}
           onDelete={(sessionId) => {
             void handleDeleteSession(sessionId);
+          }}
+          onRename={(sessionId, newTitle) => {
+            void handleRenameSession(sessionId, newTitle);
           }}
           onProviderLogin={(providerId) => {
             void handleProviderLogin(providerId);

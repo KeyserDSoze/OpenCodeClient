@@ -25,6 +25,7 @@ interface SessionsPageProps {
   onRefresh: () => void;
   onSelect: (sessionId: string) => void;
   onDelete: (sessionId: string) => void;
+  onRename?: (sessionId: string, newTitle: string) => void;
   onProviderLogin: (providerId: string) => void;
 }
 
