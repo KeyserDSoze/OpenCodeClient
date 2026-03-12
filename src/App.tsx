@@ -247,6 +247,8 @@ export default function App() {
   // True while connectToServer is loading data after health — SSE-triggered refreshes must wait
   const isInitialLoadingRef = useRef<boolean>(false);
   const streamCleanupRef = useRef<(() => void) | null>(null);
+  // AbortController for the current loadMessages fetch — aborted when switching session
+  const loadMessagesAbortRef = useRef<AbortController | null>(null);
   const sessionsRefreshTimerRef = useRef<number | null>(null);
   const messagesRefreshTimerRef = useRef<number | null>(null);
   const streamingAbortRef = useRef<(() => void) | null>(null);
@@ -385,10 +387,15 @@ export default function App() {
   }, []);
 
   const loadMessages = useCallback(async (activeConfig: ServerConfig, sessionId: string) => {
+    // Abort any in-flight loadMessages for a previous session
+    loadMessagesAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadMessagesAbortRef.current = controller;
+
     setIsLoadingMessages(true);
 
     try {
-      const nextMessages = await getSessionMessages(activeConfig, sessionId);
+      const nextMessages = await getSessionMessages(activeConfig, sessionId, controller.signal);
 
       if (selectedSessionIdRef.current === sessionId) {
         setMessages((current) => attachLocalRequestMeta(nextMessages, current));
@@ -678,6 +685,10 @@ export default function App() {
   const handleSelectSession = useCallback(
     async (sessionId: string) => {
       const activeConfig = configRef.current;
+
+      // Abort any in-flight message load for the previous session
+      loadMessagesAbortRef.current?.abort();
+      loadMessagesAbortRef.current = null;
 
       if (!activeConfig || !isConnectedRef.current) {
         // Just update selection; don't attempt a network call when offline
