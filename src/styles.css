@@ -77,6 +77,12 @@ button {
 }
 
 .setup-hero,
+.docs-shell {
+  display: grid;
+  gap: 20px;
+}
+
+.setup-hero,
 .setup-card,
 .topbar,
 .panel {
@@ -114,10 +120,100 @@ button {
   color: #f3fbfb;
 }
 
+.hero-actions {
+  margin-top: 18px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .setup-card {
   padding: 32px;
   display: grid;
   gap: 18px;
+}
+
+.known-profiles-card,
+.docs-page,
+.docs-note {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px);
+  border-radius: var(--radius-xl);
+}
+
+.known-profiles-card,
+.docs-page {
+  padding: 24px;
+}
+
+.known-profile-list,
+.docs-list,
+.docs-page,
+.docs-section,
+.docs-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.known-profile-row,
+.docs-note {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.58);
+  border-radius: 20px;
+  padding: 16px;
+}
+
+.known-profile-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+}
+
+.known-profile-row > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.known-profile-row span,
+.docs-note span,
+.docs-page p,
+.docs-list {
+  color: var(--muted);
+}
+
+.docs-shell {
+  padding: 32px;
+}
+
+.docs-page-head h1,
+.docs-section h2 {
+  margin: 4px 0 0;
+  font-family: "Space Grotesk", sans-serif;
+  letter-spacing: -0.03em;
+}
+
+.docs-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.docs-code {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: rgba(24, 31, 37, 0.95);
+  color: #edf6f7;
+  padding: 18px;
+  overflow: auto;
+}
+
+.docs-code code {
+  font-family: "IBM Plex Mono", monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.55;
 }
 
 .setup-copy h1,
@@ -728,18 +824,25 @@ button {
   .tools-grid {
     grid-template-columns: 1fr;
   }
+
+  .docs-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
   .app-shell,
-  .setup-shell {
+  .setup-shell,
+  .docs-shell {
     padding: 18px;
   }
 
   .topbar,
   .panel,
   .setup-card,
-  .hero-card {
+  .hero-card,
+  .known-profiles-card,
+  .docs-page {
     padding: 20px;
   }
 
@@ -761,6 +864,11 @@ button {
 
   .mode-toggle-buttons {
     grid-auto-flow: row;
+  }
+
+  .known-profile-row {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .topbar {

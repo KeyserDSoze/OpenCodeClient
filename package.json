@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:server": "node scripts/dev-local.mjs --server-only",
+    "dev:local": "node scripts/dev-local.mjs --open",
+    "dev:local:no-open": "node scripts/dev-local.mjs",
+    "dev:remote": "node scripts/dev-remote.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "predeploy": "npm run build",

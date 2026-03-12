@@ -22,10 +22,12 @@ import {
   toErrorMessage,
 } from "./api/opencode";
 import { ChatPage } from "./pages/Chat";
+import { DocsPage } from "./pages/Docs";
 import { SessionsPage } from "./pages/Sessions";
 import { SetupPage } from "./pages/Setup";
 import {
   DEFAULT_SERVER_CONFIG,
+  detectKnownServerProfiles,
   loadLastSession,
   loadPromptMode,
   loadSelectedAgent,
@@ -39,11 +41,13 @@ import {
   saveSelectedModel,
   saveSelectedTools,
   saveServerConfig,
+  saveServerProfile,
   saveSessionsCache,
 } from "./storage/config";
 import type {
   AgentSummary,
   ComposerSelectOption,
+  KnownServerProfile,
   MessageRequestMeta,
   PathInfo,
   PromptMode,
@@ -159,6 +163,7 @@ function makeOptimisticMessage(text: string, requestMeta?: MessageRequestMeta): 
 export default function App() {
   const [bootstrap] = useState(() => ({
     config: loadServerConfig(),
+    knownProfiles: detectKnownServerProfiles(),
     sessions: loadSessionsCache(),
     lastSessionId: loadLastSession(),
     promptMode: loadPromptMode(),
@@ -167,7 +172,12 @@ export default function App() {
     selectedTools: loadSelectedTools(),
   }));
   const [config, setConfig] = useState<ServerConfig | null>(bootstrap.config);
+  const [knownProfiles, setKnownProfiles] = useState<KnownServerProfile[]>(bootstrap.knownProfiles);
+  const [setupFormConfig, setSetupFormConfig] = useState<ServerConfig>(
+    bootstrap.config ?? DEFAULT_SERVER_CONFIG,
+  );
   const [showSetup, setShowSetup] = useState(!bootstrap.config);
+  const [showDocs, setShowDocs] = useState(false);
   const [health, setHealth] = useState<HealthState>(
     bootstrap.config ? { status: "checking" } : { status: "idle" },
   );
@@ -207,6 +217,12 @@ export default function App() {
   useEffect(() => {
     configRef.current = config;
   }, [config]);
+
+  useEffect(() => {
+    if (showSetup) {
+      setKnownProfiles(detectKnownServerProfiles());
+    }
+  }, [showSetup]);
 
   useEffect(() => {
     return () => {
@@ -400,6 +416,7 @@ export default function App() {
 
   const connectToServer = useCallback(
     async (nextConfig: ServerConfig) => {
+      setSetupFormConfig(nextConfig);
       setIsConnecting(true);
       setErrorMessage(null);
       setNotice(null);
@@ -426,6 +443,8 @@ export default function App() {
 
         setConfig(nextConfig);
         saveServerConfig(nextConfig);
+        saveServerProfile(nextConfig);
+        setKnownProfiles(detectKnownServerProfiles());
         setProviders(nextProviders);
         setProjects(workspaceMeta.projects);
         setCurrentProject(workspaceMeta.currentProject);
@@ -440,6 +459,7 @@ export default function App() {
         saveLastSession(preferredSessionId);
         setHealth({ status: "connected", version: healthResponse.version });
         setShowSetup(false);
+        setShowDocs(false);
 
         if (preferredSessionId) {
           const nextMessages = await getSessionMessages(nextConfig, preferredSessionId);
@@ -679,15 +699,27 @@ export default function App() {
 
   const setupValue = config ?? DEFAULT_SERVER_CONFIG;
 
+  if (showDocs) {
+    return <DocsPage onBack={() => setShowDocs(false)} />;
+  }
+
   if (showSetup || !config) {
     return (
       <SetupPage
-        initialValue={setupValue}
+        initialValue={setupFormConfig ?? setupValue}
+        knownProfiles={knownProfiles}
         isBusy={isConnecting}
         error={errorMessage}
         onSubmit={(nextConfig) => {
           void connectToServer(nextConfig);
         }}
+        onConnectKnownProfile={(profile) => {
+          void connectToServer(profile);
+        }}
+        onSelectKnownProfile={(profile) => {
+          setSetupFormConfig(profile);
+        }}
+        onOpenDocs={() => setShowDocs(true)}
         onCancel={config ? () => setShowSetup(false) : undefined}
       />
     );
@@ -721,7 +753,17 @@ export default function App() {
           <button className="button button-secondary" type="button" onClick={handleRefresh}>
             Refresh
           </button>
-          <button className="button button-secondary" type="button" onClick={() => setShowSetup(true)}>
+          <button className="button button-secondary" type="button" onClick={() => setShowDocs(true)}>
+            Docs
+          </button>
+          <button
+            className="button button-secondary"
+            type="button"
+            onClick={() => {
+              setSetupFormConfig(config);
+              setShowSetup(true);
+            }}
+          >
             Settings
           </button>
         </div>

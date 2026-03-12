@@ -76,3 +76,9 @@ Ricordati poi di aggiungere l'origine GitHub Pages o il dominio finale al CORS d
 ```bash
 opencode serve --cors https://username.github.io --cors https://opencode.zone
 ```
+
+Importante:
+
+- `https://opencode.zone` e il dominio del frontend GitHub Pages
+- il `Server URL` da inserire nell'app deve invece puntare al backend OpenCode reale
+- esempio corretto: `https://api.opencode.zone` oppure `https://ai.example.com`
