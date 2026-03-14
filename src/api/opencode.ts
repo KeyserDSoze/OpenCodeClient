@@ -143,6 +143,7 @@ function extractRequestMetaFromMessage(raw: {
 // ---------------------------------------------------------------------------
 
 const HEALTH_TIMEOUT_MS = 5_000;
+const SESSION_MESSAGES_TIMEOUT_MS = 20_000;
 
 function buildUrl(config: ServerConfig, path: string) {
   return `${normalizeBaseUrl(config.serverUrl)}${path.startsWith("/") ? path : `/${path}`}`;
@@ -458,6 +459,27 @@ function parseAgentsInWorker(jsonString: string): Promise<Array<{ id: string; de
   });
 }
 
+function parseSessionMessagesInWorker(jsonString: string): Promise<SessionMessage[]> {
+  return new Promise((resolve, reject) => {
+    const code = `self.onmessage=function(event){function toIso(value){return typeof value==="number"&&isFinite(value)?new Date(value).toISOString():undefined;}function extractRequestMeta(info){var agent=typeof info.agent==="string"&&info.agent?info.agent:undefined;var model;var tools;var modelInfo=info.model&&typeof info.model==="object"?info.model:null;if(modelInfo){if(typeof modelInfo.providerID==="string"&&modelInfo.providerID&&typeof modelInfo.modelID==="string"&&modelInfo.modelID){model=modelInfo.providerID+"/"+modelInfo.modelID;}else if(typeof modelInfo.modelID==="string"&&modelInfo.modelID){model=modelInfo.modelID;}}if(Array.isArray(info.tools)){tools=info.tools.filter(function(tool){return typeof tool==="string";});if(tools.length===0)tools=undefined;}else if(info.tools&&typeof info.tools==="object"){tools=Object.keys(info.tools).filter(function(tool){return info.tools[tool]===true;});if(tools.length===0)tools=undefined;}if(!agent&&!model&&!tools)return undefined;return {agent:agent,model:model,tools:tools};}function mapPart(part){if(!part||typeof part!=="object")return {type:"part"};var type=typeof part.type==="string"?part.type:"part";var next={type:type};if(typeof part.text==="string")next.text=part.text;if(typeof part.summary==="string")next.summary=part.summary;if(typeof part.reasoning==="string")next.reasoning=part.reasoning;if(typeof part.content==="string")next.content=part.content;if(typeof part.name==="string")next.name=part.name;if(typeof part.tool==="string")next.tool=part.tool;if(typeof part.command==="string")next.command=part.command;return next;}try{var parsed=JSON.parse(event.data);var list=Array.isArray(parsed)?parsed:Array.isArray(parsed&&parsed.messages)?parsed.messages:[];var messages=list.map(function(raw){var record=raw&&typeof raw==="object"?raw:{};var info=record.info&&typeof record.info==="object"?record.info:{};var time=info.time&&typeof info.time==="object"?info.time:{};var message={info:{id:typeof info.id==="string"?info.id:"",role:typeof info.role==="string"?info.role:"assistant",sessionID:typeof info.sessionID==="string"?info.sessionID:undefined,createdAt:toIso(time.created),updatedAt:toIso(time.completed),raw:{}},parts:Array.isArray(record.parts)?record.parts.map(mapPart):[]};var requestMeta=extractRequestMeta(info);if(requestMeta)message.requestMeta=requestMeta;return message;}).filter(function(message){return !!message.info.id;});self.postMessage({ok:true,data:messages});}catch(error){self.postMessage({ok:false,error:error&&typeof error.message==="string"?error.message:"Worker parse error"});}};`;
+    const blob = new Blob([code], { type: "application/javascript" });
+    const url = URL.createObjectURL(blob);
+    const w = new Worker(url);
+    w.onmessage = (evt: MessageEvent<{ ok: boolean; data?: SessionMessage[]; error?: string }>) => {
+      w.terminate();
+      URL.revokeObjectURL(url);
+      if (evt.data.ok) resolve(evt.data.data ?? []);
+      else reject(new Error(evt.data.error ?? "Worker parse error"));
+    };
+    w.onerror = (evt) => {
+      w.terminate();
+      URL.revokeObjectURL(url);
+      reject(new Error(evt.message ?? "Worker error"));
+    };
+    w.postMessage(jsonString);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Agents
 // ---------------------------------------------------------------------------
@@ -701,16 +723,70 @@ export async function getSessionMessages(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<SessionMessage[]> {
-  const client = createClient(config);
-  const { data, error } = await client.session.messages({
-    path: { id: sessionId },
-    signal,
-    throwOnError: false,
-  });
-  if (error || !data) return [];
-  return (data as Array<{ info: unknown; parts: unknown[] }>).map(
-    (raw) => sdkMessageToSessionMessage(raw as Parameters<typeof sdkMessageToSessionMessage>[0]),
-  );
+  const authHeader = toBasicAuth(config.username, config.password);
+  const encodedSessionId = encodeURIComponent(sessionId);
+  const paths = [
+    `/session/${encodedSessionId}/messages`,
+    `/session/${encodedSessionId}/message`,
+  ];
+
+  let lastHttpError: Error | null = null;
+
+  for (const path of paths) {
+    const response = await fetchWithTimeout(
+      buildUrl(config, path),
+      {
+        headers: {
+          Authorization: authHeader,
+          Accept: "application/json",
+        },
+        signal,
+      },
+      SESSION_MESSAGES_TIMEOUT_MS,
+    );
+
+    if (!response.ok) {
+      if ((response.status === 404 || response.status === 405) && path.endsWith("/messages")) {
+        lastHttpError = new Error(`${response.status} ${response.statusText}`);
+        continue;
+      }
+
+      throw new Error(`${response.status} ${response.statusText}`);
+    }
+
+    const text = await response.text();
+    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+
+    if (!contentType.includes("json") && path.endsWith("/messages")) {
+      lastHttpError = new Error(`Unexpected content type: ${contentType || "unknown"}`);
+      continue;
+    }
+
+    if (!text.trim()) {
+      if (path.endsWith("/messages")) {
+        lastHttpError = new Error("Empty response body");
+        continue;
+      }
+      return [];
+    }
+
+    try {
+      return await parseSessionMessagesInWorker(text);
+    } catch (error) {
+      if (path.endsWith("/messages")) {
+        lastHttpError = error instanceof Error ? error : new Error("Unable to parse session messages");
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  if (lastHttpError) {
+    throw lastHttpError;
+  }
+
+  return [];
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   abortSession,
   authorizeProviderOAuth,
@@ -87,6 +87,7 @@ function toModelLabel(providerName: string, model: string, isDefault?: boolean) 
 }
 
 const RECONNECT_DELAY_MS = 30_000;
+const MESSAGE_WINDOW_SIZE = 15;
 
 function buildComposerModelOptions(providers: ProviderSummary[]): ComposerSelectOption[] {
   const options = new Map<string, ComposerSelectOption>();
@@ -232,6 +233,8 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>(bootstrap.sessions);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [messages, setMessages] = useState<SessionMessage[]>([]);
+  const [messageWindowStart, setMessageWindowStart] = useState(0);
+  const [messageTotalCount, setMessageTotalCount] = useState(0);
   const [events, setEvents] = useState<StreamEvent[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(bootstrap.lastSessionId);
   const [promptMode, setPromptMode] = useState<PromptMode>(bootstrap.promptMode);
@@ -258,6 +261,11 @@ export default function App() {
   const streamCleanupRef = useRef<(() => void) | null>(null);
   // AbortController for the current loadMessages fetch — aborted when switching session
   const loadMessagesAbortRef = useRef<AbortController | null>(null);
+  const loadMessagesRequestRef = useRef(0);
+  const messageStoreRef = useRef<SessionMessage[]>([]);
+  const messageStoreSessionIdRef = useRef<string | null>(null);
+  const messageWindowStartRef = useRef(0);
+  const backgroundHydrationRunRef = useRef(0);
   const sessionsRefreshTimerRef = useRef<number | null>(null);
   const messagesRefreshTimerRef = useRef<number | null>(null);
   const streamingAbortRef = useRef<(() => void) | null>(null);
@@ -299,6 +307,10 @@ export default function App() {
   }, [selectedSessionId]);
 
   useEffect(() => {
+    messageWindowStartRef.current = messageWindowStart;
+  }, [messageWindowStart]);
+
+  useEffect(() => {
     isConnectedRef.current = health.status === "connected";
   }, [health]);
 
@@ -314,6 +326,7 @@ export default function App() {
 
   useEffect(() => {
     return () => {
+      loadMessagesAbortRef.current?.abort();
       streamCleanupRef.current?.();
 
       if (sessionsRefreshTimerRef.current) {
@@ -338,6 +351,9 @@ export default function App() {
     () => sessions.find((session) => session.id === selectedSessionId) ?? null,
     [selectedSessionId, sessions],
   );
+  const usePlainMessages = messageTotalCount > messages.length;
+  const hasOlderMessages = messageWindowStart > 0;
+  const hasNewerMessages = messageWindowStart + messages.length < messageTotalCount;
   const composerModelOptions = useMemo(() => buildComposerModelOptions(providers), [providers]);
   const composerToolOptions = useMemo(() => buildToolOptions(availableTools), [availableTools]);
 
@@ -402,40 +418,167 @@ export default function App() {
     }
   }, []);
 
-  const loadMessages = useCallback(async (activeConfig: ServerConfig, sessionId: string) => {
+  const resetMessageViewport = useCallback(() => {
+    messageStoreRef.current = [];
+    messageStoreSessionIdRef.current = null;
+    messageWindowStartRef.current = 0;
+
+    startTransition(() => {
+      setMessages([]);
+      setMessageWindowStart(0);
+      setMessageTotalCount(0);
+    });
+  }, []);
+
+  const applyMessageViewport = useCallback(
+    (
+      nextAllMessages: SessionMessage[],
+      options?: {
+        sessionId?: string | null;
+        windowStart?: number;
+        stickToLatest?: boolean;
+      },
+    ) => {
+      const maxWindowStart = Math.max(0, nextAllMessages.length - MESSAGE_WINDOW_SIZE);
+      const requestedWindowStart = options?.stickToLatest
+        ? maxWindowStart
+        : Math.min(Math.max(0, options?.windowStart ?? messageWindowStartRef.current), maxWindowStart);
+
+      messageStoreRef.current = nextAllMessages;
+      if (options && "sessionId" in options) {
+        messageStoreSessionIdRef.current = options.sessionId ?? null;
+      }
+      messageWindowStartRef.current = requestedWindowStart;
+
+      startTransition(() => {
+        setMessages(nextAllMessages.slice(requestedWindowStart, requestedWindowStart + MESSAGE_WINDOW_SIZE));
+        setMessageWindowStart(requestedWindowStart);
+        setMessageTotalCount(nextAllMessages.length);
+      });
+    },
+    [],
+  );
+
+  const updateCurrentMessageStore = useCallback(
+    (
+      updater: (current: SessionMessage[]) => SessionMessage[],
+      options?: {
+        sessionId?: string | null;
+        stickToLatest?: boolean;
+      },
+    ) => {
+      const sessionId = options?.sessionId ?? selectedSessionIdRef.current;
+      if (!sessionId) {
+        return;
+      }
+
+      const currentMessages =
+        messageStoreSessionIdRef.current === sessionId ? messageStoreRef.current : [];
+
+      applyMessageViewport(updater(currentMessages), {
+        sessionId,
+        stickToLatest: options?.stickToLatest,
+      });
+    },
+    [applyMessageViewport],
+  );
+
+  const showOlderMessagesWindow = useCallback(() => {
+    const sessionId = selectedSessionIdRef.current;
+    if (!sessionId || messageStoreSessionIdRef.current !== sessionId) {
+      return;
+    }
+
+    applyMessageViewport(messageStoreRef.current, {
+      sessionId,
+      windowStart: messageWindowStartRef.current - MESSAGE_WINDOW_SIZE,
+    });
+  }, [applyMessageViewport]);
+
+  const showNewerMessagesWindow = useCallback(() => {
+    const sessionId = selectedSessionIdRef.current;
+    if (!sessionId || messageStoreSessionIdRef.current !== sessionId) {
+      return;
+    }
+
+    applyMessageViewport(messageStoreRef.current, {
+      sessionId,
+      windowStart: messageWindowStartRef.current + MESSAGE_WINDOW_SIZE,
+    });
+  }, [applyMessageViewport]);
+
+  const loadMessages = useCallback(async (
+    activeConfig: ServerConfig,
+    sessionId: string,
+    options?: { clearExisting?: boolean },
+  ) => {
     // Abort any in-flight loadMessages for a previous session
     loadMessagesAbortRef.current?.abort();
     const controller = new AbortController();
     loadMessagesAbortRef.current = controller;
+    const requestId = loadMessagesRequestRef.current + 1;
+    loadMessagesRequestRef.current = requestId;
 
     setIsLoadingMessages(true);
+
+    if (options?.clearExisting) {
+      resetMessageViewport();
+    }
 
     try {
       const nextMessages = await getSessionMessages(activeConfig, sessionId, controller.signal);
 
+      if (controller.signal.aborted || loadMessagesRequestRef.current !== requestId) {
+        return;
+      }
+
       if (selectedSessionIdRef.current === sessionId) {
-        setMessages((current) => {
-          // Skip React re-render if message list hasn't actually changed
-          if (
-            current.length === nextMessages.length &&
-            current.every((m, i) => {
-              const n = nextMessages[i];
-              return (
-                m.info.id === n.info.id &&
-                m.info.updatedAt === n.info.updatedAt &&
-                m.parts.length === n.parts.length
-              );
-            })
-          ) {
-            return current;
+        const previousMessages = messageStoreSessionIdRef.current === sessionId ? messageStoreRef.current : [];
+        const hydratedMessages = attachLocalRequestMeta(nextMessages, previousMessages);
+        const previousMaxWindowStart = Math.max(0, previousMessages.length - MESSAGE_WINDOW_SIZE);
+        const shouldStickToLatest =
+          messageStoreSessionIdRef.current !== sessionId ||
+          messageWindowStartRef.current >= previousMaxWindowStart;
+
+        if (
+          previousMessages.length === hydratedMessages.length &&
+          previousMessages.every((message, index) => {
+            const nextMessage = hydratedMessages[index];
+            return (
+              message.info.id === nextMessage.info.id &&
+              message.info.updatedAt === nextMessage.info.updatedAt &&
+              message.parts.length === nextMessage.parts.length
+            );
+          })
+        ) {
+          if (messageStoreSessionIdRef.current !== sessionId) {
+            applyMessageViewport(previousMessages, { sessionId, stickToLatest: shouldStickToLatest });
           }
-          return attachLocalRequestMeta(nextMessages, current);
+          return;
+        }
+
+        applyMessageViewport(hydratedMessages, {
+          sessionId,
+          stickToLatest: shouldStickToLatest,
         });
       }
+    } catch (error) {
+      if (controller.signal.aborted || loadMessagesRequestRef.current !== requestId) {
+        return;
+      }
+
+      if (selectedSessionIdRef.current === sessionId && options?.clearExisting) {
+        resetMessageViewport();
+      }
+
+      toast.error(toErrorMessage(error));
     } finally {
-      setIsLoadingMessages(false);
+      if (loadMessagesRequestRef.current === requestId) {
+        loadMessagesAbortRef.current = null;
+        setIsLoadingMessages(false);
+      }
     }
-  }, []);
+  }, [applyMessageViewport, resetMessageViewport, toast]);
 
   const loadSessions = useCallback(
     async (activeConfig: ServerConfig, preferredSessionId?: string | null) => {
@@ -474,7 +617,7 @@ export default function App() {
         }
 
         if (!desiredSessionId) {
-          setMessages([]);
+          resetMessageViewport();
         }
 
         return desiredSessionId;
@@ -482,7 +625,7 @@ export default function App() {
         setIsLoadingSessions(false);
       }
     },
-    [],
+    [resetMessageViewport],
   );
 
   const scheduleSessionsRefresh = useCallback(
@@ -573,9 +716,63 @@ export default function App() {
     [scheduleSessionsRefresh, scheduleMessagesRefresh],
   );
 
+  const hydrateConnectedData = useCallback((activeConfig: ServerConfig) => {
+    const runId = backgroundHydrationRunRef.current;
+
+    window.setTimeout(() => {
+      void (async () => {
+        const isRunCurrent = () =>
+          backgroundHydrationRunRef.current === runId &&
+          reconnectConfigRef.current === activeConfig &&
+          isConnectedRef.current;
+
+        if (!isRunCurrent()) {
+          return;
+        }
+
+        startEventStream(activeConfig);
+
+        const [nextProviders, workspaceMeta] = await Promise.all([
+          getProviders(activeConfig).catch(() => [] as Awaited<ReturnType<typeof getProviders>>),
+          fetchWorkspaceMeta(activeConfig).catch(() => ({
+            projects: [] as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["projects"],
+            currentProject: null as unknown as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["currentProject"],
+            pathInfo: null as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["pathInfo"],
+            vcsInfo: null as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["vcsInfo"],
+            tools: [] as Awaited<ReturnType<typeof fetchWorkspaceMeta>>["tools"],
+          })),
+        ]);
+
+        if (!isRunCurrent()) {
+          return;
+        }
+
+        startTransition(() => {
+          setProviders(nextProviders);
+          setProjects(workspaceMeta.projects);
+          setCurrentProject(workspaceMeta.currentProject);
+          setPathInfo(workspaceMeta.pathInfo);
+          setVcsInfo(workspaceMeta.vcsInfo);
+          setAvailableTools(workspaceMeta.tools);
+        });
+
+        const nextAgents = await fetchAgentsCatalog(activeConfig);
+
+        if (!isRunCurrent()) {
+          return;
+        }
+
+        startTransition(() => {
+          setAgents(nextAgents);
+        });
+      })();
+    }, 80);
+  }, [fetchAgentsCatalog, fetchWorkspaceMeta, startEventStream]);
+
   const connectToServer = useCallback(
     async (nextConfig: ServerConfig, remember?: boolean, connectionName?: string) => {
       reconnectConfigRef.current = nextConfig;
+      backgroundHydrationRunRef.current += 1;
       cancelReconnect();
       setSetupFormConfig(nextConfig);
       setIsConnecting(true);
@@ -610,7 +807,7 @@ export default function App() {
         setSessions([]);
         selectedSessionIdRef.current = null;
         setSelectedSessionId(null);
-        setMessages([]);
+        resetMessageViewport();
         setProviders([]);
         setProjects([]);
         setCurrentProject(null);
@@ -633,8 +830,9 @@ export default function App() {
         selectedSessionIdRef.current = preferredSessionId;
         setSelectedSessionId(preferredSessionId);
         saveLastSession(preferredSessionId);
-        setMessages([]);
+        resetMessageViewport();
         isInitialLoadingRef.current = false;
+        hydrateConnectedData(nextConfig);
       } catch (error) {
         isConnectedRef.current = false;
         isInitialLoadingRef.current = false;
@@ -647,7 +845,7 @@ export default function App() {
         setIsConnecting(false);
       }
     },
-    [cancelReconnect],
+    [cancelReconnect, hydrateConnectedData, resetMessageViewport],
   );
 
   // Wire scheduleReconnect after connectToServer is defined (avoids circular useCallback deps)
@@ -690,12 +888,13 @@ export default function App() {
     reconnectConfigRef.current = null;
     isConnectedRef.current = false;
     isInitialLoadingRef.current = false;
+    backgroundHydrationRunRef.current += 1;
     cancelReconnect();
     streamCleanupRef.current?.();
     saveRememberConnection(false);
     setConfig(null);
     setSessions([]);
-    setMessages([]);
+    resetMessageViewport();
     setProviders([]);
     setAgents([]);
     setEvents([]);
@@ -703,10 +902,10 @@ export default function App() {
     setStreamState("offline");
     setSetupFormConfig(DEFAULT_SERVER_CONFIG);
     setShowSetup(true);
-  }, [cancelReconnect]);
+  }, [cancelReconnect, resetMessageViewport]);
 
   const handleSelectSession = useCallback(
-    async (sessionId: string) => {
+    (sessionId: string) => {
       const activeConfig = configRef.current;
 
       // Abort any in-flight message load for the previous session
@@ -718,15 +917,23 @@ export default function App() {
         selectedSessionIdRef.current = sessionId;
         setSelectedSessionId(sessionId);
         saveLastSession(sessionId);
+        if (selectedSessionId !== sessionId) {
+          resetMessageViewport();
+        }
         return;
       }
 
       selectedSessionIdRef.current = sessionId;
       setSelectedSessionId(sessionId);
       saveLastSession(sessionId);
-      await loadMessages(activeConfig, sessionId);
+
+      if (selectedSessionId !== sessionId) {
+        resetMessageViewport();
+      }
+
+      void loadMessages(activeConfig, sessionId, { clearExisting: false });
     },
-    [loadMessages],
+    [loadMessages, resetMessageViewport, selectedSessionId],
   );
 
   const handleRefresh = useCallback(async () => {
@@ -755,7 +962,8 @@ export default function App() {
     setVcsInfo(workspaceMeta.vcsInfo);
     setAgents(nextAgents);
     setAvailableTools(workspaceMeta.tools);
-  }, [fetchAgentsCatalog, fetchWorkspaceMeta, loadMessages, loadSessions]);
+    startEventStream(activeConfig);
+  }, [fetchAgentsCatalog, fetchWorkspaceMeta, loadMessages, loadSessions, startEventStream]);
 
   const handleCreateSession = useCallback(async () => {
     const activeConfig = configRef.current;
@@ -771,11 +979,11 @@ export default function App() {
       selectedSessionIdRef.current = nextSession.id;
       setSelectedSessionId(nextSession.id);
       saveLastSession(nextSession.id);
-      setMessages([]);
+      resetMessageViewport();
     } catch (error) {
       toast.error(toErrorMessage(error));
     }
-  }, [sessions]);
+  }, [resetMessageViewport, sessions]);
 
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
@@ -811,14 +1019,14 @@ export default function App() {
           if (nextSelected) {
             await loadMessages(activeConfig, nextSelected);
           } else {
-            setMessages([]);
+            resetMessageViewport();
           }
         }
       } catch (error) {
         toast.error(toErrorMessage(error));
       }
     },
-    [loadMessages, sessions],
+    [loadMessages, resetMessageViewport, sessions],
   );
 
   const ensureSession = useCallback(async () => {
@@ -838,10 +1046,10 @@ export default function App() {
     selectedSessionIdRef.current = nextSession.id;
     setSelectedSessionId(nextSession.id);
     saveLastSession(nextSession.id);
-    setMessages([]);
+    resetMessageViewport();
 
     return { sessionId: nextSession.id, config: activeConfig };
-  }, [sessions]);
+  }, [resetMessageViewport, sessions]);
 
   const handleSend = useCallback(async (text: string) => {
     setIsSending(true);
@@ -858,7 +1066,10 @@ export default function App() {
         tools: selectedTools.length > 0 ? selectedTools : undefined,
       };
 
-      setMessages((current) => [...current, makeOptimisticMessage(text, requestMeta)]);
+      updateCurrentMessageStore(
+        (current) => [...current, makeOptimisticMessage(text, requestMeta)],
+        { sessionId, stickToLatest: true },
+      );
       const payload = {
         text,
         agent: selectedAgent || undefined,
@@ -873,15 +1084,15 @@ export default function App() {
     } catch (error) {
       toast.error(toErrorMessage(error));
       // Mark the last optimistic user message as failed so user can retry
-      setMessages((current) => {
-        const lastOptimisticIdx = [...current].reverse().findIndex((m) => m.optimistic && !m.failed);
+      updateCurrentMessageStore((current) => {
+        const lastOptimisticIdx = [...current].reverse().findIndex((message) => message.optimistic && !message.failed);
         if (lastOptimisticIdx === -1) return current;
         const realIdx = current.length - 1 - lastOptimisticIdx;
-        return current.map((m, i) => (i === realIdx ? { ...m, failed: true } : m));
-      });
+        return current.map((message, index) => (index === realIdx ? { ...message, failed: true } : message));
+      }, { stickToLatest: true });
       setIsSending(false);
     }
-  }, [ensureSession, loadMessages, loadSessions, promptMode, selectedAgent, selectedModel, selectedTools]);
+  }, [ensureSession, loadMessages, loadSessions, promptMode, selectedAgent, selectedModel, selectedTools, updateCurrentMessageStore]);
 
   const handleProviderLogin = useCallback(async (providerId: string) => {
     const activeConfig = configRef.current;
@@ -1192,8 +1403,13 @@ export default function App() {
           }}
           session={currentSession}
           messages={messages}
+          usePlainMessages={usePlainMessages}
+          hasOlderMessages={hasOlderMessages}
+          hasNewerMessages={hasNewerMessages}
           isLoading={isLoadingMessages}
           isSending={isSending}
+          onShowOlderMessages={showOlderMessagesWindow}
+          onShowNewerMessages={showNewerMessagesWindow}
           onAbort={() => {
             void handleAbortSession();
           }}
@@ -1209,7 +1425,7 @@ export default function App() {
           }}
           onSend={handleSend}
           onRemoveMessage={(messageId) => {
-            setMessages((current) => current.filter((m) => m.info.id !== messageId));
+            updateCurrentMessageStore((current) => current.filter((message) => message.info.id !== messageId));
           }}
         />
       </div>

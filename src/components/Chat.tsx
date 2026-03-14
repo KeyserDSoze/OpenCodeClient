@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { DragEvent, FormEvent, KeyboardEvent, SyntheticEvent } from "react";
+import type { DragEvent, FormEvent, KeyboardEvent, SyntheticEvent, WheelEvent } from "react";
 import type {
   AgentSummary,
   ComposerSelectOption,
@@ -12,6 +12,8 @@ import { extractMessageText } from "../api/opencode";
 import { useSpeechRecognition, useTts } from "../hooks/useSpeech";
 import { ApiTools } from "./ApiTools";
 import { Message } from "./Message";
+
+const WINDOW_EDGE_THRESHOLD_PX = 96;
 
 interface ChatProps {
   agents: AgentSummary[];
@@ -28,8 +30,13 @@ interface ChatProps {
   onSelectedToolsChange: (toolIds: string[]) => void;
   session: SessionSummary | null;
   messages: SessionMessage[];
+  usePlainMessages: boolean;
+  hasOlderMessages: boolean;
+  hasNewerMessages: boolean;
   isLoading: boolean;
   isSending: boolean;
+  onShowOlderMessages: () => void;
+  onShowNewerMessages: () => void;
   onReload: () => void;
   onAbort?: () => void;
   onSend: (text: string) => Promise<void> | void;
@@ -88,8 +95,13 @@ export function Chat({
   onSelectedToolsChange,
   session,
   messages,
+  usePlainMessages,
+  hasOlderMessages,
+  hasNewerMessages,
   isLoading,
   isSending,
+  onShowOlderMessages,
+  onShowNewerMessages,
   onReload,
   onAbort,
   onSend,
@@ -102,12 +114,17 @@ export function Chat({
   const [isDragOver, setIsDragOver] = useState(false);
   // STT auto-send: default true → send immediately; false → append to draft
   const [sttAutoSend, setSttAutoSend] = useState(true);
+  const chatMessagesRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
   // Keep a ref so the STT onEnd callback always sees the latest value
   const sttAutoSendRef = useRef(sttAutoSend);
   const draftRef = useRef(draft);
+  const shouldStickToLatestRef = useRef(true);
+  const shiftLockRef = useRef(false);
+  const pendingWindowShiftRef = useRef<"older" | "newer" | null>(null);
+  const previousSessionIdRef = useRef<string | null>(session?.id ?? null);
 
   useEffect(() => { sttAutoSendRef.current = sttAutoSend; }, [sttAutoSend]);
   useEffect(() => { draftRef.current = draft; }, [draft]);
@@ -204,12 +221,82 @@ export function Chat({
   };
 
   useEffect(() => {
-    // Use 'auto' (instant) instead of 'smooth' to avoid layout thrashing
-    // when messages update rapidly from SSE events.
+    const sessionChanged = previousSessionIdRef.current !== (session?.id ?? null);
+    previousSessionIdRef.current = session?.id ?? null;
+
+    const container = chatMessagesRef.current;
+    const pendingShift = pendingWindowShiftRef.current;
+
+    if (!container) {
+      pendingWindowShiftRef.current = null;
+      shiftLockRef.current = false;
+      return;
+    }
+
+    if (sessionChanged) {
+      shouldStickToLatestRef.current = true;
+    }
+
+    if (pendingShift === "older") {
+      container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight - WINDOW_EDGE_THRESHOLD_PX);
+      pendingWindowShiftRef.current = null;
+      shiftLockRef.current = false;
+      return;
+    }
+
+    if (pendingShift === "newer") {
+      container.scrollTop = Math.min(WINDOW_EDGE_THRESHOLD_PX, Math.max(0, container.scrollHeight - container.clientHeight));
+      pendingWindowShiftRef.current = null;
+      shiftLockRef.current = false;
+      return;
+    }
+
+    if (!sessionChanged && !shouldStickToLatestRef.current) {
+      return;
+    }
+
     endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
-  }, [messages, showTypingIndicator]);
+  }, [messages, session?.id, showTypingIndicator]);
 
   const title = useMemo(() => session?.title ?? "New conversation", [session]);
+
+  const handleMessagesScroll = () => {
+    const container = chatMessagesRef.current;
+    if (!container) {
+      return;
+    }
+
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    shouldStickToLatestRef.current = !hasNewerMessages && distanceFromBottom <= WINDOW_EDGE_THRESHOLD_PX;
+  };
+
+  const handleMessagesWheel = (event: WheelEvent<HTMLDivElement>) => {
+    const container = chatMessagesRef.current;
+    if (!container || shiftLockRef.current) {
+      return;
+    }
+
+    const scrollingUp = event.deltaY < 0;
+    const scrollingDown = event.deltaY > 0;
+    const atTop = container.scrollTop <= 0;
+    const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 1;
+
+    if (scrollingUp && atTop && hasOlderMessages) {
+      event.preventDefault();
+      shiftLockRef.current = true;
+      shouldStickToLatestRef.current = false;
+      pendingWindowShiftRef.current = "older";
+      onShowOlderMessages();
+      return;
+    }
+
+    if (scrollingDown && atBottom && hasNewerMessages) {
+      event.preventDefault();
+      shiftLockRef.current = true;
+      pendingWindowShiftRef.current = "newer";
+      onShowNewerMessages();
+    }
+  };
 
   const handleRetry = async (messageId: string, text: string) => {
     // Remove the failed message then re-send
@@ -357,7 +444,7 @@ export function Chat({
       )}
 
       {/* Messages area */}
-      <div className="chat-messages">
+      <div className="chat-messages" ref={chatMessagesRef} onScroll={handleMessagesScroll} onWheel={handleMessagesWheel}>
         {messages.length === 0 && !isLoading ? (
           <div className="chat-empty-state">
             <div className="chat-empty-icon">
@@ -375,14 +462,16 @@ export function Chat({
         ) : (
           <div className="messages-list">
             {messages.map((message) => (
-              <Message
-                key={message.info.id}
-                message={message}
-                isStreaming={message.isStreaming}
-                onRetry={message.failed ? (text) => void handleRetry(message.info.id, text) : undefined}
-              />
+              <div key={message.info.id} className="message-virtual-row">
+                <Message
+                  message={message}
+                  isStreaming={message.isStreaming}
+                  preferPlainText={usePlainMessages}
+                  onRetry={message.failed ? (text) => void handleRetry(message.info.id, text) : undefined}
+                />
+              </div>
             ))}
-            {showTypingIndicator && (
+            {showTypingIndicator && !hasNewerMessages && (
               <div className="msg-row">
                 <div className="msg-avatar msg-avatar-assistant" aria-hidden="true">
                   <svg width="12" height="12" viewBox="0 0 32 32" fill="none" aria-hidden="true">

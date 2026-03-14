@@ -1006,6 +1006,7 @@ button {
 .chat-messages {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 24px 0;
   display: flex;
   flex-direction: column;
@@ -1019,6 +1020,12 @@ button {
   max-width: 800px;
   margin: 0 auto;
   width: 100%;
+}
+
+.message-virtual-row,
+.messages-virtual-spacer {
+  width: 100%;
+  flex: none;
 }
 
 .chat-empty-state {

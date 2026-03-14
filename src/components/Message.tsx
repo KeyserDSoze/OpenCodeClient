@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, startTransition, useEffect, useMemo, useState } from "react";
 import { extractMessageText } from "../api/opencode";
 import { highlightCode, parseMarkdown } from "../lib/markdown";
 import type { SessionMessage } from "../types/opencode";
@@ -7,6 +7,7 @@ interface MessageProps {
   message: SessionMessage;
   /** When true, renders a pulsing cursor at the end (streaming) */
   isStreaming?: boolean;
+  preferPlainText?: boolean;
   /** Called when user clicks "Retry" on a failed optimistic message */
   onRetry?: (text: string) => void;
 }
@@ -93,8 +94,42 @@ interface CodeBlockProps {
 }
 
 function CodeBlock({ code, lang }: CodeBlockProps) {
-  const highlighted = useMemo(() => highlightCode(code, lang), [code, lang]);
+  const [shouldHighlight, setShouldHighlight] = useState(false);
+  const highlighted = useMemo(
+    () => (shouldHighlight ? highlightCode(code, lang) : ""),
+    [shouldHighlight, code, lang],
+  );
   const displayLang = lang && lang !== "plaintext" ? lang : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    const win = window as Window & {
+      requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+
+    setShouldHighlight(false);
+
+    const enable = () => {
+      if (!cancelled) {
+        startTransition(() => setShouldHighlight(true));
+      }
+    };
+
+    if (typeof win.requestIdleCallback === "function") {
+      const handle = win.requestIdleCallback(enable, { timeout: 1200 });
+      return () => {
+        cancelled = true;
+        win.cancelIdleCallback?.(handle);
+      };
+    }
+
+    const handle = window.setTimeout(enable, 64);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [code, lang]);
 
   return (
     <div className="code-block">
@@ -102,16 +137,69 @@ function CodeBlock({ code, lang }: CodeBlockProps) {
         {displayLang && <span className="code-block-lang">{displayLang}</span>}
         <CopyButton text={code} />
       </div>
-      <pre
-        className="code-block-pre"
-        // eslint-disable-next-line react/no-danger
-        dangerouslySetInnerHTML={{ __html: highlighted }}
-      />
+      {shouldHighlight ? (
+        <pre
+          className="code-block-pre"
+          // eslint-disable-next-line react/no-danger
+          dangerouslySetInnerHTML={{ __html: highlighted }}
+        />
+      ) : (
+        <pre className="code-block-pre"><code>{code}</code></pre>
+      )}
     </div>
   );
 }
 
-function MarkdownBody({ text, isStreaming }: { text: string; isStreaming?: boolean }) {
+function MarkdownBody({ text, isStreaming, preferPlainText }: { text: string; isStreaming?: boolean; preferPlainText?: boolean }) {
+  if (preferPlainText) {
+    return (
+      <div className="md-body">
+        <pre className="msg-user-text">{text}</pre>
+      </div>
+    );
+  }
+
+  const [shouldRenderMarkdown, setShouldRenderMarkdown] = useState(false);
+  const blocks = useMemo(
+    () => (shouldRenderMarkdown && !isStreaming ? parseMarkdown(text) : []),
+    [shouldRenderMarkdown, isStreaming, text],
+  );
+
+  useEffect(() => {
+    if (isStreaming) {
+      setShouldRenderMarkdown(false);
+      return;
+    }
+
+    let cancelled = false;
+    const win = window as Window & {
+      requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+
+    setShouldRenderMarkdown(false);
+
+    const enable = () => {
+      if (!cancelled) {
+        startTransition(() => setShouldRenderMarkdown(true));
+      }
+    };
+
+    if (typeof win.requestIdleCallback === "function") {
+      const handle = win.requestIdleCallback(enable, { timeout: 800 });
+      return () => {
+        cancelled = true;
+        win.cancelIdleCallback?.(handle);
+      };
+    }
+
+    const handle = window.setTimeout(enable, 48);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [text, isStreaming]);
+
   if (isStreaming) {
     return (
       <div className="md-body">
@@ -121,7 +209,13 @@ function MarkdownBody({ text, isStreaming }: { text: string; isStreaming?: boole
     );
   }
 
-  const blocks = useMemo(() => parseMarkdown(text), [text]);
+  if (!shouldRenderMarkdown) {
+    return (
+      <div className="md-body">
+        <pre className="msg-user-text">{text}</pre>
+      </div>
+    );
+  }
 
   return (
     <div className="md-body">
@@ -142,7 +236,7 @@ function MarkdownBody({ text, isStreaming }: { text: string; isStreaming?: boole
   );
 }
 
-export const Message = memo(function Message({ message, isStreaming, onRetry }: MessageProps) {
+export const Message = memo(function Message({ message, isStreaming, preferPlainText, onRetry }: MessageProps) {
   const tone = roleTone(message.info.role);
   // Memoize text extraction — only recomputes when parts or streamingText change
   const text = useMemo(() => extractMessageText(message), [message.parts, message.streamingText]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -184,7 +278,7 @@ export const Message = memo(function Message({ message, isStreaming, onRetry }: 
           // User messages: plain pre (no markdown parsing needed)
           <pre className="msg-user-text">{text}</pre>
         ) : (
-          <MarkdownBody text={text} isStreaming={isStreaming} />
+          <MarkdownBody text={text} isStreaming={isStreaming} preferPlainText={preferPlainText} />
         )}
 
         <div className="msg-footer">

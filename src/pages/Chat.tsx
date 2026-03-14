@@ -23,8 +23,13 @@ interface ChatPageProps {
   onSelectedToolsChange: (toolIds: string[]) => void;
   session: SessionSummary | null;
   messages: SessionMessage[];
+  usePlainMessages: boolean;
+  hasOlderMessages: boolean;
+  hasNewerMessages: boolean;
   isLoading: boolean;
   isSending: boolean;
+  onShowOlderMessages: () => void;
+  onShowNewerMessages: () => void;
   onReload: () => void;
   onAbort?: () => void;
   onSend: (text: string) => Promise<void> | void;
